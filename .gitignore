@@ -1,0 +1,4 @@
+node_modules/
+data/app-state.json
+.DS_Store
+.env

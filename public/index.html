@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CallerDesk MVP</title>
+    <link rel="stylesheet" href="/styles.css?v=12" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Voice marketing for neighborhood businesses</p>
+        <h1>CallerDesk</h1>
+      </div>
+      <div class="topbar-actions">
+        <div class="telephony-status identity-status" id="workspaceIdentity">Loading workspace...</div>
+        <div class="telephony-status" id="telephonyStatus">Loading telephony status...</div>
+        <button id="logoutButton" type="button" class="secondary-action">Sign out</button>
+      </div>
+    </header>
+
+    <main class="app-shell">
+      <section class="hero-band">
+        <div class="hero-copy">
+          <h2>Invite customers personally, then answer their questions from approved details.</h2>
+          <p>
+            Create a popup or sale campaign, upload opted-in contacts, preview the call, and schedule
+            outbound voice calls with follow-up capture.
+          </p>
+        </div>
+        <div class="voice-visual" aria-label="Live call workflow">
+          <div class="phone-frame">
+            <div class="call-dot"></div>
+            <div>
+              <strong>Outbound call</strong>
+              <span>Scripted invite + approved Q&amp;A</span>
+            </div>
+          </div>
+          <div class="waveform" aria-hidden="true">
+            <span></span><span></span><span></span><span></span><span></span><span></span>
+          </div>
+          <div class="handoff-row">
+            <span>Unknown questions become follow-ups</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="metrics-grid" id="metricsGrid"></section>
+
+      <nav class="workspace-tabs" aria-label="Workspace">
+        <button class="tab active" data-view="campaigns">Campaigns</button>
+        <button class="tab" data-view="customers">Customers</button>
+        <button class="tab" data-view="knowledge">Knowledge</button>
+        <button class="tab" data-view="calls">Calls</button>
+        <button class="tab" data-view="followups">Follow-ups</button>
+        <button class="tab" data-view="settings">Settings</button>
+        <button class="tab admin-only" data-view="admin">Admin</button>
+      </nav>
+
+      <section class="workspace-view active" data-view-panel="campaigns">
+        <div class="campaign-layout">
+          <aside class="panel campaign-list-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Campaigns</p>
+                <h3>Saved campaigns</h3>
+              </div>
+              <button id="newCampaign" type="button" class="secondary-action">New</button>
+            </div>
+            <div id="campaignList" class="stack-list"></div>
+          </aside>
+
+          <div class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Editor</p>
+                <h3 id="campaignEditorTitle">Create campaign</h3>
+              </div>
+              <button id="scheduleCalls" type="button" class="primary-action">Schedule calls</button>
+            </div>
+            <form id="campaignForm" class="form-grid">
+              <input type="hidden" name="id" />
+              <label>
+                Campaign name
+                <input name="name" required placeholder="Saturday chai tasting" />
+              </label>
+              <label>
+                Type
+                <select name="type">
+                  <option value="event">Event or popup</option>
+                  <option value="sale">Sale or offer</option>
+                </select>
+              </label>
+              <label>
+                Call mode
+                <select name="callMode">
+                  <option value="conversational">Conversational AI</option>
+                  <option value="message">One-way message delivery</option>
+                  <option value="message_then_conversation">Message, then Q&amp;A</option>
+                </select>
+              </label>
+              <label>
+                Send calls
+                <select name="dispatchMode">
+                  <option value="batch">Batch through Twilio</option>
+                  <option value="one_by_one">One by one</option>
+                </select>
+              </label>
+              <label>
+                Language
+                <select name="languageMode">
+                  <option value="english">English</option>
+                  <option value="hindi">Hindi</option>
+                  <option value="hinglish">Hinglish / mixed</option>
+                  <option value="custom">Custom language plan</option>
+                </select>
+              </label>
+              <label>
+                Date and time
+                <input name="eventDate" required type="datetime-local" />
+              </label>
+              <label>
+                Target tags
+                <input name="targetTags" placeholder="regular, popup" />
+              </label>
+              <label class="span-2">
+                Language notes
+                <textarea name="languageInstructions" rows="2" placeholder="Example: [Hindi] for the greeting, [English] for menu names and the address. Do not translate brand names."></textarea>
+              </label>
+              <label class="span-2">
+                Location
+                <input name="location" required placeholder="18 Oak Street" />
+              </label>
+              <label class="span-2">
+                Offer
+                <input name="offer" placeholder="Free mini pastry with a latte" />
+              </label>
+              <label class="span-2">
+                Objective
+                <textarea name="objective" rows="2" placeholder="Invite regulars and answer quick event questions."></textarea>
+              </label>
+              <label class="span-2">
+                Script notes
+                <textarea name="scriptNotes" rows="2" placeholder="Warm tone, mention limited seating, no unapproved discounts."></textarea>
+              </label>
+              <label class="span-2">
+                Editable call script
+                <textarea name="scriptOverride" id="scriptPreview" class="script-preview" rows="10" spellcheck="true" placeholder="Click Preview script to generate a draft, then edit and save it."></textarea>
+              </label>
+              <div class="span-2 campaign-customer-section">
+                <div class="section-label">
+                  <strong>Campaign customers</strong>
+                  <span>Select specific customers for this campaign. If none are selected, tags are used; if no tags are set, all callable customers are included.</span>
+                </div>
+                <div id="campaignCustomerPicker" class="customer-picker"></div>
+              </div>
+              <div class="action-row span-2">
+                <button type="submit" class="primary-action" id="saveCampaign">Save campaign</button>
+                <button id="previewScript" type="button" class="secondary-action">Preview script</button>
+                <button id="saveScript" type="button" class="secondary-action">Save script only</button>
+              </div>
+            </form>
+            <div class="qa-tester">
+              <label>
+                Test a customer question
+                <input id="questionInput" placeholder="What time does it start?" />
+              </label>
+              <button id="askQuestion" type="button" class="secondary-action">Ask</button>
+              <div id="answerResult" class="inline-result"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="workspace-view" data-view-panel="customers">
+        <div class="panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Customers</p>
+              <h3>Upload and manage opted-in customers</h3>
+            </div>
+          </div>
+          <div class="upload-row">
+            <input id="csvFile" type="file" accept=".csv,text/csv" />
+            <button id="loadSampleCsv" type="button" class="secondary-action">Use sample CSV</button>
+          </div>
+          <textarea id="csvText" class="csv-box" rows="8" spellcheck="false" placeholder="name,phone,consent_source,tags"></textarea>
+          <button id="importCsv" type="button" class="primary-action">Import contacts</button>
+          <div id="csvResult" class="inline-result"></div>
+          <div id="customersTable" class="tab-content"></div>
+        </div>
+      </section>
+
+      <section class="workspace-view" data-view-panel="knowledge">
+        <div class="panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Knowledge base</p>
+              <h3>Approved answers</h3>
+            </div>
+          </div>
+          <form id="knowledgeForm" class="form-grid">
+            <label>
+              Campaign scope
+              <select id="kbScope" name="scope"></select>
+            </label>
+            <label>
+              Topic
+              <input name="topic" required placeholder="menu, parking, booking" />
+            </label>
+            <label class="span-2">
+              Customer question
+              <input name="question" required placeholder="Do I need a reservation?" />
+            </label>
+            <label class="span-2">
+              Approved answer
+              <textarea name="answer" required rows="3" placeholder="Reservations are not required, but arriving early is recommended."></textarea>
+            </label>
+            <button type="submit" class="primary-action">Add answer</button>
+          </form>
+          <div id="knowledgeList" class="stack-list"></div>
+        </div>
+      </section>
+
+      <section class="workspace-view" data-view-panel="calls">
+        <div class="panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Calls</p>
+              <h3>Call logs</h3>
+            </div>
+          </div>
+          <div id="callsTable" class="tab-content"></div>
+        </div>
+      </section>
+
+      <section class="workspace-view" data-view-panel="followups">
+        <div class="panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Follow-ups</p>
+              <h3>Questions needing the business</h3>
+            </div>
+          </div>
+          <div id="followupsTable" class="tab-content"></div>
+        </div>
+      </section>
+
+      <section class="workspace-view" data-view-panel="settings">
+        <div class="panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Settings</p>
+              <h3>Business profile</h3>
+            </div>
+          </div>
+          <form id="businessForm" class="form-grid">
+            <label>
+              Workspace
+              <input name="workspaceName" placeholder="Default workspace" />
+            </label>
+            <label>
+              Assigned caller number
+              <input id="assignedCallerNumber" readonly placeholder="Admin has not assigned a number" />
+            </label>
+            <label>
+              Business name
+              <input name="name" required placeholder="Hawaii Trip Crew" />
+            </label>
+            <label>
+              Caller identity
+              <input name="callerId" placeholder="Shrey's Hawaii trip crew" />
+            </label>
+            <label>
+              Business phone
+              <input name="phone" placeholder="+15551234567" />
+            </label>
+            <label>
+              Timezone
+              <input name="timezone" placeholder="America/Los_Angeles" />
+            </label>
+            <label>
+              Call window start
+              <input name="callWindowStart" type="time" />
+            </label>
+            <label>
+              Call window end
+              <input name="callWindowEnd" type="time" />
+            </label>
+            <button type="submit" class="primary-action">Save business profile</button>
+          </form>
+          <div class="settings-divider"></div>
+          <form id="openAiKeyForm" class="form-grid">
+            <label>
+              OpenAI API key
+              <input name="apiKey" type="password" autocomplete="off" placeholder="sk-..." />
+            </label>
+            <label>
+              Saved key
+              <input id="openAiKeyMasked" readonly placeholder="No key saved" />
+            </label>
+            <div class="action-row span-2">
+              <button type="submit" class="primary-action">Save OpenAI key</button>
+              <button id="clearOpenAiKey" type="button" class="secondary-action">Clear key</button>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <section class="workspace-view" data-view-panel="admin">
+        <div class="admin-layout">
+          <div class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Admin</p>
+                <h3>Workspaces</h3>
+              </div>
+            </div>
+            <form id="workspaceForm" class="form-grid compact-form">
+              <input type="hidden" name="id" />
+              <label>
+                Workspace name
+                <input name="name" required placeholder="Mina's Corner Cafe" />
+              </label>
+              <label>
+                Business name
+                <input name="businessName" placeholder="Mina's Corner Cafe" />
+              </label>
+              <label>
+                Assign Twilio number
+                <select name="assignedTwilioNumberId"></select>
+              </label>
+              <button type="submit" class="primary-action">Save workspace</button>
+            </form>
+            <div id="workspacesTable" class="tab-content"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Admin</p>
+                <h3>Users</h3>
+              </div>
+            </div>
+            <form id="userForm" class="form-grid compact-form">
+              <input type="hidden" name="id" />
+              <label>
+                Email
+                <input name="email" type="email" required placeholder="owner@example.com" />
+              </label>
+              <label>
+                Password
+                <input name="password" type="password" autocomplete="new-password" placeholder="Required for new users" />
+              </label>
+              <label>
+                Role
+                <select name="role">
+                  <option value="user">User</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </label>
+              <label>
+                Workspace
+                <select name="workspaceId" required></select>
+              </label>
+              <button type="submit" class="primary-action">Save user</button>
+            </form>
+            <div id="usersTable" class="tab-content"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Admin</p>
+                <h3>Twilio numbers</h3>
+              </div>
+            </div>
+            <form id="twilioNumberForm" class="form-grid compact-form">
+              <input type="hidden" name="id" />
+              <label>
+                Phone number
+                <input name="phoneNumber" required placeholder="+14155550199" />
+              </label>
+              <label>
+                Label
+                <input name="label" placeholder="Cafe outbound line" />
+              </label>
+              <label>
+                Workspace
+                <select name="workspaceId"></select>
+              </label>
+              <button type="submit" class="primary-action">Save number</button>
+            </form>
+            <div id="twilioNumbersTable" class="tab-content"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="/app.js?v=12"></script>
+  </body>
+</html>
