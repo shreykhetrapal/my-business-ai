@@ -21,6 +21,9 @@ const elements = {
   newCampaign: document.querySelector("#newCampaign"),
   previewScript: document.querySelector("#previewScript"),
   saveScript: document.querySelector("#saveScript"),
+  previewMessages: document.querySelector("#previewMessages"),
+  scheduleMessages: document.querySelector("#scheduleMessages"),
+  messagePreviewResult: document.querySelector("#messagePreviewResult"),
   scheduleCalls: document.querySelector("#scheduleCalls"),
   scriptPreview: document.querySelector("#scriptPreview"),
   questionInput: document.querySelector("#questionInput"),
@@ -36,18 +39,24 @@ const elements = {
   kbScope: document.querySelector("#kbScope"),
   knowledgeList: document.querySelector("#knowledgeList"),
   callsTable: document.querySelector("#callsTable"),
+  messagesTable: document.querySelector("#messagesTable"),
   followupsTable: document.querySelector("#followupsTable"),
   businessForm: document.querySelector("#businessForm"),
   assignedCallerNumber: document.querySelector("#assignedCallerNumber"),
   openAiKeyForm: document.querySelector("#openAiKeyForm"),
   openAiKeyMasked: document.querySelector("#openAiKeyMasked"),
   clearOpenAiKey: document.querySelector("#clearOpenAiKey"),
+  adminOpenAiKeyMasked: document.querySelector("#adminOpenAiKeyMasked"),
+  newWorkspace: document.querySelector("#newWorkspace"),
   workspaceForm: document.querySelector("#workspaceForm"),
   workspacesTable: document.querySelector("#workspacesTable"),
   userForm: document.querySelector("#userForm"),
   usersTable: document.querySelector("#usersTable"),
   twilioNumberForm: document.querySelector("#twilioNumberForm"),
   twilioNumbersTable: document.querySelector("#twilioNumbersTable"),
+  messagingSenderForm: document.querySelector("#messagingSenderForm"),
+  messagingSendersTable: document.querySelector("#messagingSendersTable"),
+  deleteMessagingSender: document.querySelector("#deleteMessagingSender"),
   logoutButton: document.querySelector("#logoutButton"),
   toast: document.querySelector("#toast")
 };
@@ -105,6 +114,18 @@ function formValue(name, value) {
   if (field) field.value = value ?? "";
 }
 
+function formChecked(name, checked) {
+  const field = elements.campaignForm.elements[name];
+  if (field) field.checked = Boolean(checked);
+}
+
+function setCheckedValues(name, values = []) {
+  const selected = new Set(values);
+  elements.campaignForm.querySelectorAll(`input[name="${name}"]`).forEach((field) => {
+    field.checked = selected.has(field.value);
+  });
+}
+
 function campaignToForm(campaign) {
   formValue("id", campaign?.id || "");
   formValue("name", campaign?.name || "");
@@ -120,6 +141,12 @@ function campaignToForm(campaign) {
   formValue("objective", campaign?.objective || "");
   formValue("scriptNotes", campaign?.scriptNotes || "");
   formValue("scriptOverride", campaign?.scriptOverride || "");
+  setCheckedValues("messageChannels", campaign?.messageChannels || []);
+  formChecked("messageAiEnabled", campaign?.messageAiEnabled !== false);
+  formValue("smsBody", campaign?.smsBody || "");
+  formValue("whatsappContentSid", campaign?.whatsappContentSid || "");
+  formValue("whatsappContentVariables", JSON.stringify(campaign?.whatsappContentVariables || {}, null, 2));
+  elements.messagePreviewResult.textContent = "";
   elements.campaignEditorTitle.textContent = campaign ? "Edit campaign" : "Create campaign";
 }
 
@@ -127,6 +154,8 @@ function campaignFormBody() {
   const formData = new FormData(elements.campaignForm);
   return {
     ...Object.fromEntries(formData),
+    messageChannels: formData.getAll("messageChannels"),
+    messageAiEnabled: formData.has("messageAiEnabled"),
     targetContactIds: formData.getAll("targetContactIds")
   };
 }
@@ -197,12 +226,14 @@ function downloadJson(filename, payload) {
 
 function renderTelephony() {
   const config = state.data.telephony;
+  const messaging = state.data.messaging || {};
   const mode = config.mode === "live" && config.liveReady ? "Live calls enabled" : "Dry-run call queue";
+  const messagingMode = messaging.mode === "live" && messaging.liveReady ? "live messaging" : "dry-run messaging";
   const details =
     config.mode === "live" && !config.liveReady
       ? "Live mode needs Twilio credentials, PUBLIC_BASE_URL, and an assigned workspace number."
       : config.publicBaseUrl
-        ? `Webhook base: ${config.publicBaseUrl}`
+        ? `Webhook base: ${config.publicBaseUrl} · ${messagingMode}`
         : "Set TELEPHONY_MODE=live with Twilio credentials to place real calls.";
   const user = state.data.currentUser;
   const workspace = state.data.workspace;
@@ -214,10 +245,12 @@ function renderMetrics() {
   const optedIn = state.data.contacts.filter((contact) => !contact.optedOut && contact.consentSource).length;
   const followUps = state.data.followUps.filter((item) => item.status !== "closed").length;
   const scheduled = state.data.callLogs.filter((log) => log.status !== "failed").length;
+  const messages = (state.data.messageLogs || []).filter((log) => log.status !== "failed").length;
   const metrics = [
     ["Contacts", state.data.contacts.length, `${optedIn} callable with consent`],
     ["Campaigns", state.data.campaigns.length, "Popup and sale call flows"],
     ["Calls", scheduled, "Queued or attempted calls"],
+    ["Messages", messages, "SMS and WhatsApp logs"],
     ["Follow-ups", followUps, "Questions needing the business"]
   ];
 
@@ -255,7 +288,7 @@ function renderCampaignList() {
         <button class="campaign-list-item ${campaign.id === state.activeCampaignId ? "active" : ""}" data-campaign-id="${escapeHtml(campaign.id)}">
           <strong>${escapeHtml(campaign.name)}</strong>
           <span>${escapeHtml(campaign.type)} · ${escapeHtml(campaign.callMode || "conversational")} · ${escapeHtml(campaign.languageMode || "english")} · ${formatDate(campaign.eventDate)}</span>
-          <small>${escapeHtml((campaign.dispatchMode || "batch") === "one_by_one" ? "One by one" : "Batch")} · ${escapeHtml((campaign.targetContactIds || []).length ? `${campaign.targetContactIds.length} selected` : "tags/all customers")} · ${escapeHtml(campaign.location || "No location")}</small>
+          <small>${escapeHtml((campaign.dispatchMode || "batch") === "one_by_one" ? "One by one" : "Batch")} · ${escapeHtml((campaign.messageChannels || []).join("/") || "voice only")} · ${escapeHtml((campaign.targetContactIds || []).length ? `${campaign.targetContactIds.length} selected` : "tags/all customers")} · ${escapeHtml(campaign.location || "No location")}</small>
         </button>
       `)
       .join("") || '<div class="inline-result">No campaigns yet.</div>';
@@ -361,7 +394,13 @@ function renderContactsTable() {
                 <td>${escapeHtml(contact.phone)}</td>
                 <td>${escapeHtml(contact.consentSource || "missing")}</td>
                 <td><div class="pill-row">${tagPills(contact.tags)}</div></td>
-                <td><span class="status ${contact.optedOut ? "danger" : "ok"}">${contact.optedOut ? "opted out" : "callable"}</span></td>
+                <td>
+                  <span class="status ${contact.optedOut ? "danger" : "ok"}">${contact.optedOut ? "opted out" : "contactable"}</span>
+                  <div class="pill-row">
+                    <span class="pill ${contact.channelOptOuts?.sms ? "danger-pill" : ""}">SMS ${contact.channelOptOuts?.sms ? "off" : "on"}</span>
+                    <span class="pill ${contact.channelOptOuts?.whatsapp ? "danger-pill" : ""}">WhatsApp ${contact.channelOptOuts?.whatsapp ? "off" : "on"}</span>
+                  </div>
+                </td>
                 <td>
                   <button
                     class="secondary-action call-permission"
@@ -441,6 +480,58 @@ function renderCallsTable() {
   `;
 }
 
+function threadById(id) {
+  return (state.data.messageThreads || []).find((thread) => thread.id === id);
+}
+
+function renderMessagesTable() {
+  elements.messagesTable.innerHTML = `
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Contact</th>
+            <th>Campaign</th>
+            <th>Channel</th>
+            <th>Direction</th>
+            <th>Status</th>
+            <th>Message</th>
+            <th>Created</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${(state.data.messageLogs || [])
+            .map((log) => {
+              const contact = contactById(log.contactId);
+              const campaign = campaignById(log.campaignId);
+              const thread = threadById(log.threadId);
+              return `
+                <tr>
+                  <td>${escapeHtml(contact?.name || "Unknown")}<br><small>${escapeHtml(contact?.phone || "")}</small></td>
+                  <td>${escapeHtml(campaign?.name || "Unknown")}</td>
+                  <td>${escapeHtml(log.channel || "")}</td>
+                  <td>${escapeHtml(log.direction || "")}</td>
+                  <td><span class="status ${statusClass(log.status)}">${escapeHtml(log.status || "")}</span><br><small>${escapeHtml(log.providerMessageId || log.error || "")}</small></td>
+                  <td>${escapeHtml(log.body || log.contentSid || "Template message")}</td>
+                  <td>${formatDate(log.createdAt)}</td>
+                  <td>
+                    ${
+                      thread?.handoffRequired
+                        ? `<button class="secondary-action reset-thread-ai" data-thread-id="${escapeHtml(thread.id)}">Reset AI</button>`
+                        : ""
+                    }
+                  </td>
+                </tr>
+              `;
+            })
+            .join("") || '<tr><td colspan="8">No messages yet.</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
 function renderFollowUpsTable() {
   elements.followupsTable.innerHTML = `
     <div class="table-wrap">
@@ -494,12 +585,29 @@ function twilioNumberOptions(selected = "") {
   ].join("");
 }
 
+function resetWorkspaceAdminForm() {
+  elements.workspaceForm.reset();
+  elements.workspaceForm.elements.id.value = "";
+  elements.adminOpenAiKeyMasked.value = "";
+  elements.workspaceForm.elements.clearOpenAiKey.checked = false;
+  elements.workspaceForm.elements.assignedTwilioNumberId.innerHTML = twilioNumberOptions("");
+}
+
+function resetMessagingSenderForm() {
+  elements.messagingSenderForm.reset();
+  elements.messagingSenderForm.elements.id.value = "";
+  elements.messagingSenderForm.elements.active.checked = true;
+  elements.messagingSenderForm.elements.isDefault.checked = false;
+  elements.messagingSenderForm.elements.workspaceId.innerHTML = workspaceOptions(elements.messagingSenderForm.elements.workspaceId.value || state.data.workspace?.id || "");
+}
+
 function renderAdmin() {
   if (!state.data.admin) return;
 
   elements.workspaceForm.elements.assignedTwilioNumberId.innerHTML = twilioNumberOptions(elements.workspaceForm.elements.assignedTwilioNumberId.value);
   elements.userForm.elements.workspaceId.innerHTML = workspaceOptions(elements.userForm.elements.workspaceId.value);
   elements.twilioNumberForm.elements.workspaceId.innerHTML = workspaceOptions(elements.twilioNumberForm.elements.workspaceId.value, true);
+  elements.messagingSenderForm.elements.workspaceId.innerHTML = workspaceOptions(elements.messagingSenderForm.elements.workspaceId.value || state.data.workspace?.id || "");
 
   elements.workspacesTable.innerHTML = `
     <div class="table-wrap">
@@ -566,6 +674,35 @@ function renderAdmin() {
       </table>
     </div>
   `;
+
+  elements.messagingSendersTable.innerHTML = `
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Sender</th><th>Workspace</th><th>Channel</th><th>Route</th><th>Status</th><th>Action</th></tr></thead>
+        <tbody>
+          ${(state.data.admin.messagingSenders || [])
+            .map((sender) => {
+              const workspace = state.data.admin.workspaces.find((item) => item.id === sender.workspaceId);
+              const route = sender.messagingServiceSid || sender.fromAddress || "Missing route";
+              return `
+                <tr>
+                  <td><strong>${escapeHtml(sender.label || "Sender")}</strong><br><small>${escapeHtml(sender.whatsappContentSid || "")}</small></td>
+                  <td>${escapeHtml(workspace?.name || "Missing")}</td>
+                  <td>${escapeHtml(sender.channel || "")}</td>
+                  <td>${escapeHtml(route)}</td>
+                  <td>
+                    <span class="status ${sender.active === false ? "danger" : "ok"}">${sender.active === false ? "inactive" : "active"}</span>
+                    ${sender.isDefault ? '<span class="status ok">default</span>' : ""}
+                  </td>
+                  <td><button class="secondary-action edit-messaging-sender" data-sender-id="${escapeHtml(sender.id)}">Edit</button></td>
+                </tr>
+              `;
+            })
+            .join("") || '<tr><td colspan="6">No messaging senders yet.</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+  `;
 }
 
 function render() {
@@ -577,6 +714,7 @@ function render() {
   renderKnowledge();
   renderContactsTable();
   renderCallsTable();
+  renderMessagesTable();
   renderFollowUpsTable();
   businessToForm();
   renderAdmin();
@@ -682,6 +820,62 @@ elements.scheduleCalls.addEventListener("click", async () => {
     showToast(error.message);
   } finally {
     elements.scheduleCalls.disabled = false;
+  }
+});
+
+elements.previewMessages.addEventListener("click", async () => {
+  const campaign = activeCampaign();
+  if (!campaign) {
+    showToast("Save the campaign before previewing messages.");
+    return;
+  }
+  try {
+    const payload = await api(`/api/campaigns/${campaign.id}/messages/preview`, { method: "POST", body: {} });
+    const rows = Object.entries(payload.preview || {})
+      .map(([channel, item]) => {
+        const detail =
+          channel === "whatsapp"
+            ? `ContentSid: ${escapeHtml(item.contentSid || "missing")}<br>Variables: ${escapeHtml(JSON.stringify(item.contentVariables || {}))}`
+            : escapeHtml(item.body || "");
+        return `<strong>${escapeHtml(channel.toUpperCase())}</strong> to ${escapeHtml(payload.sampleContact?.name || "sample")}<br>${detail}`;
+      })
+      .join("<hr>");
+    elements.messagePreviewResult.innerHTML = `${payload.readinessError ? `<strong>${escapeHtml(payload.readinessError)}</strong><br>` : ""}${rows || "Enable SMS or WhatsApp first."}`;
+  } catch (error) {
+    showToast(error.message);
+  }
+});
+
+elements.scheduleMessages.addEventListener("click", async () => {
+  const campaign = activeCampaign();
+  if (!campaign) {
+    showToast("Select or save a campaign before scheduling messages.");
+    return;
+  }
+  elements.scheduleMessages.disabled = true;
+  try {
+    const payload = await api(`/api/campaigns/${campaign.id}/messages/schedule`, { method: "POST", body: {} });
+    state.data = payload.state;
+    state.activeView = "messages";
+    showToast(`Scheduled ${payload.results.length} message(s).`);
+    render();
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    elements.scheduleMessages.disabled = false;
+  }
+});
+
+elements.messagesTable.addEventListener("click", async (event) => {
+  const button = event.target.closest(".reset-thread-ai");
+  if (!button) return;
+  try {
+    const payload = await api(`/api/message-threads/${button.dataset.threadId}/reset-ai`, { method: "POST", body: {} });
+    state.data = payload.state;
+    showToast("AI reset for this thread.");
+    render();
+  } catch (error) {
+    showToast(error.message);
   }
 });
 
@@ -902,6 +1096,10 @@ elements.clearOpenAiKey.addEventListener("click", async () => {
   }
 });
 
+elements.newWorkspace.addEventListener("click", () => {
+  resetWorkspaceAdminForm();
+});
+
 elements.workspacesTable.addEventListener("click", (event) => {
   const button = event.target.closest(".edit-workspace");
   if (!button) return;
@@ -910,6 +1108,9 @@ elements.workspacesTable.addEventListener("click", (event) => {
   elements.workspaceForm.elements.id.value = workspace.id;
   elements.workspaceForm.elements.name.value = workspace.name || "";
   elements.workspaceForm.elements.businessName.value = workspace.business?.name || "";
+  elements.workspaceForm.elements.openAiApiKey.value = "";
+  elements.workspaceForm.elements.clearOpenAiKey.checked = false;
+  elements.adminOpenAiKeyMasked.value = workspace.openAiKeyMasked || "";
   elements.workspaceForm.elements.assignedTwilioNumberId.innerHTML = twilioNumberOptions(workspace.assignedTwilioNumberId || "");
 });
 
@@ -918,12 +1119,13 @@ elements.workspaceForm.addEventListener("submit", async (event) => {
   const body = Object.fromEntries(new FormData(elements.workspaceForm));
   const id = body.id;
   delete body.id;
+  if (!body.openAiApiKey) delete body.openAiApiKey;
   try {
     const payload = id
       ? await api(`/api/admin/workspaces/${id}`, { method: "PUT", body })
       : await api("/api/admin/workspaces", { method: "POST", body });
     state.data = payload.state;
-    elements.workspaceForm.reset();
+    resetWorkspaceAdminForm();
     showToast(id ? "Workspace saved." : "Workspace created.");
     render();
   } catch (error) {
@@ -985,6 +1187,64 @@ elements.twilioNumberForm.addEventListener("submit", async (event) => {
     state.data = payload.state;
     elements.twilioNumberForm.reset();
     showToast(id ? "Twilio number saved." : "Twilio number added.");
+    render();
+  } catch (error) {
+    showToast(error.message);
+  }
+});
+
+elements.messagingSendersTable.addEventListener("click", (event) => {
+  const button = event.target.closest(".edit-messaging-sender");
+  if (!button) return;
+  const sender = state.data.admin?.messagingSenders.find((item) => item.id === button.dataset.senderId);
+  if (!sender) return;
+  elements.messagingSenderForm.elements.id.value = sender.id;
+  elements.messagingSenderForm.elements.label.value = sender.label || "";
+  elements.messagingSenderForm.elements.workspaceId.innerHTML = workspaceOptions(sender.workspaceId || "");
+  elements.messagingSenderForm.elements.channel.value = sender.channel || "sms";
+  elements.messagingSenderForm.elements.fromAddress.value = sender.fromAddress || "";
+  elements.messagingSenderForm.elements.messagingServiceSid.value = sender.messagingServiceSid || "";
+  elements.messagingSenderForm.elements.whatsappContentSid.value = sender.whatsappContentSid || "";
+  elements.messagingSenderForm.elements.whatsappContentVariables.value = JSON.stringify(sender.whatsappContentVariables || {}, null, 2);
+  elements.messagingSenderForm.elements.isDefault.checked = Boolean(sender.isDefault);
+  elements.messagingSenderForm.elements.active.checked = sender.active !== false;
+});
+
+elements.messagingSenderForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const formData = new FormData(elements.messagingSenderForm);
+  const body = {
+    ...Object.fromEntries(formData),
+    isDefault: formData.has("isDefault"),
+    active: formData.has("active")
+  };
+  const id = body.id;
+  delete body.id;
+  try {
+    const payload = id
+      ? await api(`/api/admin/messaging-senders/${id}`, { method: "PUT", body })
+      : await api("/api/admin/messaging-senders", { method: "POST", body });
+    state.data = payload.state;
+    resetMessagingSenderForm();
+    showToast(id ? "Messaging sender saved." : "Messaging sender added.");
+    render();
+  } catch (error) {
+    showToast(error.message);
+  }
+});
+
+elements.deleteMessagingSender.addEventListener("click", async () => {
+  const id = elements.messagingSenderForm.elements.id.value;
+  if (!id) {
+    resetMessagingSenderForm();
+    return;
+  }
+  if (!window.confirm("Delete this messaging sender?")) return;
+  try {
+    const payload = await api(`/api/admin/messaging-senders/${id}`, { method: "DELETE", body: {} });
+    state.data = payload.state;
+    resetMessagingSenderForm();
+    showToast("Messaging sender deleted.");
     render();
   } catch (error) {
     showToast(error.message);

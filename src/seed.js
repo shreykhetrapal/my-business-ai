@@ -64,5 +64,8 @@ export const initialState = {
     }
   ],
   callLogs: [],
-  followUps: []
+  followUps: [],
+  messagingSenders: [],
+  messageThreads: [],
+  messageLogs: []
 };

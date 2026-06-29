@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>CallerDesk MVP</title>
-    <link rel="stylesheet" href="/styles.css?v=12" />
+    <link rel="stylesheet" href="/styles.css?v=14" />
   </head>
   <body>
     <header class="topbar">
@@ -52,6 +52,7 @@
         <button class="tab" data-view="customers">Customers</button>
         <button class="tab" data-view="knowledge">Knowledge</button>
         <button class="tab" data-view="calls">Calls</button>
+        <button class="tab" data-view="messages">Messages</button>
         <button class="tab" data-view="followups">Follow-ups</button>
         <button class="tab" data-view="settings">Settings</button>
         <button class="tab admin-only" data-view="admin">Admin</button>
@@ -147,6 +148,38 @@
                 Editable call script
                 <textarea name="scriptOverride" id="scriptPreview" class="script-preview" rows="10" spellcheck="true" placeholder="Click Preview script to generate a draft, then edit and save it."></textarea>
               </label>
+              <div class="span-2 messaging-editor">
+                <div class="section-label">
+                  <strong>Messaging</strong>
+                  <span>Messages reuse the assigned Twilio caller number by default. WhatsApp still needs an approved Twilio template ContentSid.</span>
+                </div>
+                <div class="channel-toggle-row">
+                  <label class="checkbox-row">
+                    <input type="checkbox" name="messageChannels" value="sms" />
+                    <span>SMS</span>
+                  </label>
+                  <label class="checkbox-row">
+                    <input type="checkbox" name="messageChannels" value="whatsapp" />
+                    <span>WhatsApp</span>
+                  </label>
+                  <label class="checkbox-row">
+                    <input type="checkbox" name="messageAiEnabled" value="true" checked />
+                    <span>AI replies on active message threads</span>
+                  </label>
+                </div>
+              </div>
+              <label class="span-2">
+                SMS body
+                <textarea name="smsBody" rows="4" placeholder="Hi {{customer_name}}, {{business_name}} wanted to invite you to {{campaign_name}} at {{location}}."></textarea>
+              </label>
+              <label>
+                WhatsApp ContentSid
+                <input name="whatsappContentSid" placeholder="HXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" />
+              </label>
+              <label>
+                WhatsApp variables JSON
+                <textarea name="whatsappContentVariables" rows="3" spellcheck="false" placeholder='{"1":"{{customer_name}}","2":"{{campaign_name}}"}'></textarea>
+              </label>
               <div class="span-2 campaign-customer-section">
                 <div class="section-label">
                   <strong>Campaign customers</strong>
@@ -158,8 +191,11 @@
                 <button type="submit" class="primary-action" id="saveCampaign">Save campaign</button>
                 <button id="previewScript" type="button" class="secondary-action">Preview script</button>
                 <button id="saveScript" type="button" class="secondary-action">Save script only</button>
+                <button id="previewMessages" type="button" class="secondary-action">Preview messages</button>
+                <button id="scheduleMessages" type="button" class="secondary-action">Schedule messages</button>
               </div>
             </form>
+            <div id="messagePreviewResult" class="inline-result"></div>
             <div class="qa-tester">
               <label>
                 Test a customer question
@@ -234,6 +270,18 @@
         </div>
       </section>
 
+      <section class="workspace-view" data-view-panel="messages">
+        <div class="panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Messages</p>
+              <h3>SMS and WhatsApp logs</h3>
+            </div>
+          </div>
+          <div id="messagesTable" class="tab-content"></div>
+        </div>
+      </section>
+
       <section class="workspace-view" data-view-panel="followups">
         <div class="panel">
           <div class="panel-heading">
@@ -260,8 +308,8 @@
               <input name="workspaceName" placeholder="Default workspace" />
             </label>
             <label>
-              Assigned caller number
-              <input id="assignedCallerNumber" readonly placeholder="Admin has not assigned a number" />
+              Assigned caller / messaging number
+              <input id="assignedCallerNumber" readonly placeholder="Admin has not assigned a Twilio number" />
             </label>
             <label>
               Business name
@@ -315,6 +363,7 @@
                 <p class="eyebrow">Admin</p>
                 <h3>Workspaces</h3>
               </div>
+              <button id="newWorkspace" type="button" class="secondary-action">New</button>
             </div>
             <form id="workspaceForm" class="form-grid compact-form">
               <input type="hidden" name="id" />
@@ -329,6 +378,18 @@
               <label>
                 Assign Twilio number
                 <select name="assignedTwilioNumberId"></select>
+              </label>
+              <label>
+                OpenAI API key
+                <input name="openAiApiKey" type="password" autocomplete="off" placeholder="Leave blank to keep saved key" />
+              </label>
+              <label>
+                Saved OpenAI key
+                <input id="adminOpenAiKeyMasked" readonly placeholder="No key saved" />
+              </label>
+              <label class="checkbox-row span-2">
+                <input name="clearOpenAiKey" type="checkbox" />
+                <span>Clear saved OpenAI key for this workspace</span>
               </label>
               <button type="submit" class="primary-action">Save workspace</button>
             </form>
@@ -393,11 +454,67 @@
             </form>
             <div id="twilioNumbersTable" class="tab-content"></div>
           </div>
+
+          <div class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Admin</p>
+                <h3>Messaging sender overrides</h3>
+              </div>
+            </div>
+            <form id="messagingSenderForm" class="form-grid compact-form">
+              <input type="hidden" name="id" />
+              <label>
+                Label
+                <input name="label" placeholder="Optional SMS or WhatsApp override" />
+              </label>
+              <label>
+                Workspace
+                <select name="workspaceId" required></select>
+              </label>
+              <label>
+                Channel
+                <select name="channel">
+                  <option value="sms">SMS</option>
+                  <option value="whatsapp">WhatsApp</option>
+                </select>
+              </label>
+              <label>
+                From address
+                <input name="fromAddress" placeholder="Leave blank unless overriding the assigned number" />
+              </label>
+              <label>
+                Messaging Service SID
+                <input name="messagingServiceSid" placeholder="Optional override: MGxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" />
+              </label>
+              <label>
+                WhatsApp default ContentSid
+                <input name="whatsappContentSid" placeholder="HXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" />
+              </label>
+              <label class="span-2">
+                Default WhatsApp variables JSON
+                <textarea name="whatsappContentVariables" rows="2" spellcheck="false" placeholder='{"1":"{{customer_name}}"}'></textarea>
+              </label>
+              <label class="checkbox-row">
+                <input name="isDefault" type="checkbox" />
+                <span>Default for workspace/channel</span>
+              </label>
+              <label class="checkbox-row">
+                <input name="active" type="checkbox" checked />
+                <span>Active</span>
+              </label>
+              <div class="action-row span-2">
+                <button type="submit" class="primary-action">Save sender</button>
+                <button id="deleteMessagingSender" type="button" class="secondary-action">Delete sender</button>
+              </div>
+            </form>
+            <div id="messagingSendersTable" class="tab-content"></div>
+          </div>
         </div>
       </section>
     </main>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="/app.js?v=12"></script>
+    <script type="module" src="/app.js?v=14"></script>
   </body>
 </html>

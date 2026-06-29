@@ -150,6 +150,46 @@ function baseState({ assignSecondNumber = true, secondOpenAiKey = true } = {}) {
     knowledgeBase: [],
     callLogs: [],
     followUps: [],
+    messagingSenders: [
+      {
+        id: "sender_one",
+        workspaceId: "workspace_one",
+        label: "Cafe One SMS",
+        channel: "sms",
+        fromAddress: "+14155550111",
+        active: true,
+        isDefault: true,
+        createdAt: now,
+        updatedAt: now
+      }
+    ],
+    messageThreads: [
+      {
+        id: "thread_one",
+        workspaceId: "workspace_one",
+        campaignId: "campaign_one",
+        contactId: "contact_one",
+        channel: "sms",
+        status: "active",
+        createdAt: now,
+        updatedAt: now
+      }
+    ],
+    messageLogs: [
+      {
+        id: "msg_one",
+        workspaceId: "workspace_one",
+        campaignId: "campaign_one",
+        contactId: "contact_one",
+        threadId: "thread_one",
+        channel: "sms",
+        direction: "outbound",
+        body: "Hello",
+        status: "queued_local",
+        createdAt: now,
+        updatedAt: now
+      }
+    ],
     auditLogs: []
   };
 }
@@ -174,6 +214,8 @@ test("SQLiteStore persists workspace-scoped records", () => {
   assert.equal(reloaded.state.workspaces.length, 2);
   assert.deepEqual(scopeStateToWorkspace(reloaded.state, "workspace_one").contacts.map((contact) => contact.id), ["contact_one"]);
   assert.deepEqual(scopeStateToWorkspace(reloaded.state, "workspace_two").contacts.map((contact) => contact.id), ["contact_two"]);
+  assert.deepEqual(scopeStateToWorkspace(reloaded.state, "workspace_one").messageLogs.map((log) => log.id), ["msg_one"]);
+  assert.deepEqual(scopeStateToWorkspace(reloaded.state, "workspace_two").messageLogs, []);
 });
 
 test("workspace access policy allows admin across workspaces and limits users", () => {

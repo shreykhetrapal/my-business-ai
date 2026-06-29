@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.my-business-ai.app</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/shrey/Documents/Codex/2026-05-19/marketing-for-small-businesses-they-do</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/shrey/.nvm/versions/node/v22.21.1/bin/node</string>
+    <string>--env-file-if-exists=.env</string>
+    <string>src/server.js</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/my-business-ai-app.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/tmp/my-business-ai-app.err</string>
+</dict>
+</plist>

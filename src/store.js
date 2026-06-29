@@ -127,6 +127,9 @@ function initialWorkspaceState(sourceState = initialState, env = process.env) {
     knowledgeBase: withWorkspace(sourceState.knowledgeBase || [], workspace.id),
     callLogs: withWorkspace(sourceState.callLogs || [], workspace.id),
     followUps: withWorkspace(sourceState.followUps || [], workspace.id),
+    messagingSenders: withWorkspace(sourceState.messagingSenders || [], workspace.id),
+    messageThreads: withWorkspace(sourceState.messageThreads || [], workspace.id),
+    messageLogs: withWorkspace(sourceState.messageLogs || [], workspace.id),
     users: [
       {
         id: "user_admin",
@@ -164,6 +167,9 @@ export function normalizeWorkspaceState(state = {}, env = process.env) {
     knowledgeBase: withWorkspace(state.knowledgeBase || [], fallbackWorkspaceId),
     callLogs: withWorkspace(state.callLogs || [], fallbackWorkspaceId),
     followUps: withWorkspace(state.followUps || [], fallbackWorkspaceId),
+    messagingSenders: withWorkspace(state.messagingSenders || [], fallbackWorkspaceId),
+    messageThreads: withWorkspace(state.messageThreads || [], fallbackWorkspaceId),
+    messageLogs: withWorkspace(state.messageLogs || [], fallbackWorkspaceId),
     users: state.users?.length ? state.users : seeded.users,
     workspaces,
     twilioNumbers: state.twilioNumbers || seeded.twilioNumbers,
@@ -183,7 +189,10 @@ export function scopeStateToWorkspace(state, workspaceId) {
     campaigns: (state.campaigns || []).filter((item) => item.workspaceId === workspaceId),
     knowledgeBase: (state.knowledgeBase || []).filter((item) => item.workspaceId === workspaceId),
     callLogs: (state.callLogs || []).filter((item) => item.workspaceId === workspaceId),
-    followUps: (state.followUps || []).filter((item) => item.workspaceId === workspaceId)
+    followUps: (state.followUps || []).filter((item) => item.workspaceId === workspaceId),
+    messagingSenders: (state.messagingSenders || []).filter((item) => item.workspaceId === workspaceId),
+    messageThreads: (state.messageThreads || []).filter((item) => item.workspaceId === workspaceId),
+    messageLogs: (state.messageLogs || []).filter((item) => item.workspaceId === workspaceId)
   };
 }
 
@@ -274,6 +283,21 @@ export class SQLiteStore {
         workspaceId TEXT NOT NULL,
         dataJson TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS messaging_senders (
+        id TEXT PRIMARY KEY,
+        workspaceId TEXT NOT NULL,
+        dataJson TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS message_threads (
+        id TEXT PRIMARY KEY,
+        workspaceId TEXT NOT NULL,
+        dataJson TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS message_logs (
+        id TEXT PRIMARY KEY,
+        workspaceId TEXT NOT NULL,
+        dataJson TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS audit_logs (
         id TEXT PRIMARY KEY,
         workspaceId TEXT,
@@ -321,6 +345,9 @@ export class SQLiteStore {
       knowledgeBase: this.readJsonTable("knowledge_base"),
       callLogs: this.readJsonTable("call_logs"),
       followUps: this.readJsonTable("follow_ups"),
+      messagingSenders: this.readJsonTable("messaging_senders"),
+      messageThreads: this.readJsonTable("message_threads"),
+      messageLogs: this.readJsonTable("message_logs"),
       users: this.db.prepare("SELECT * FROM users ORDER BY createdAt ASC").all(),
       workspaces,
       twilioNumbers: this.db
@@ -362,6 +389,9 @@ export class SQLiteStore {
         DELETE FROM knowledge_base;
         DELETE FROM call_logs;
         DELETE FROM follow_ups;
+        DELETE FROM messaging_senders;
+        DELETE FROM message_threads;
+        DELETE FROM message_logs;
         DELETE FROM audit_logs;
       `);
 
@@ -410,6 +440,9 @@ export class SQLiteStore {
       this.writeJsonTable("knowledge_base", state.knowledgeBase);
       this.writeJsonTable("call_logs", state.callLogs);
       this.writeJsonTable("follow_ups", state.followUps);
+      this.writeJsonTable("messaging_senders", state.messagingSenders);
+      this.writeJsonTable("message_threads", state.messageThreads);
+      this.writeJsonTable("message_logs", state.messageLogs);
 
       const insertAudit = this.db.prepare(
         "INSERT INTO audit_logs(id, workspaceId, userId, action, entityType, entityId, detailsJson, createdAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?)"

@@ -71,6 +71,17 @@ label {
   font-weight: 700;
 }
 
+label.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--ink);
+}
+
+label.checkbox-row input {
+  width: auto;
+}
+
 .topbar {
   display: flex;
   align-items: center;
@@ -230,7 +241,7 @@ label {
 
 .metrics-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 14px;
   margin-bottom: 18px;
 }
@@ -467,6 +478,22 @@ textarea.script-preview {
   gap: 10px;
 }
 
+.messaging-editor {
+  display: grid;
+  gap: 10px;
+}
+
+.channel-toggle-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfb;
+  padding: 10px 12px;
+}
+
 .section-label {
   display: grid;
   gap: 4px;
@@ -563,6 +590,17 @@ textarea.script-preview {
   padding: 3px 8px;
   font-size: 0.75rem;
   font-weight: 800;
+}
+
+.danger-pill {
+  background: #fde8e6;
+  color: var(--danger);
+}
+
+.inline-result hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 10px 0;
 }
 
 .tabs {

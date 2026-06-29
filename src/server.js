@@ -18,16 +18,32 @@ import { setContactCallPermission } from "./contactPermissions.js";
 import { decryptSecret, encryptSecret, maskSecret } from "./cryptoSecrets.js";
 import { importContactsFromCsv } from "./csv.js";
 import { ensureFollowUp } from "./followUps.js";
+import {
+  MessagingAdapter,
+  channelOptedOut,
+  formatAddress,
+  isMessagingOptOut,
+  normalizeChannel,
+  normalizePhoneAddress,
+  parseTemplateVariables,
+  renderContentVariables,
+  renderMessageTemplate,
+  resolveMessagingSender,
+  setChannelOptOut
+} from "./messaging.js";
+import { createMessagingAiReply } from "./messagingAi.js";
 import { handleRealtimeMediaStream, isCustomerEndIntent } from "./realtimeBridge.js";
 import { createId, nowIso, scopeStateToWorkspace, SQLiteStore, workspaceCallReadinessError } from "./store.js";
 import { TelephonyAdapter } from "./telephony.js";
 import { appendTranscriptEntry, transcriptEntries } from "./transcripts.js";
+import { validateTwilioSignature } from "./twilioSecurity.js";
 import { acceptWebSocketUpgrade } from "./websocket.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const publicDir = resolve(__dirname, "../public");
 let defaultStore = null;
 let defaultTelephony = null;
+let defaultMessaging = null;
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -73,7 +89,7 @@ async function readBody(request) {
   return raw;
 }
 
-function createHandlers({ store, telephony }) {
+function createHandlers({ store, telephony, messaging }) {
 function sanitizeUser(user) {
   if (!user) return null;
   return {
@@ -104,6 +120,39 @@ function assignedNumberForWorkspace(workspaceId) {
   return store.state.twilioNumbers.find((number) => number.id === workspace.assignedTwilioNumberId && number.active !== false) || null;
 }
 
+function assignedNumberMessagingSender(workspaceId, channel) {
+  const normalizedChannel = normalizeChannel(channel);
+  const number = assignedNumberForWorkspace(workspaceId);
+  if (!number || !normalizedChannel) return null;
+  return {
+    id: `assigned_${number.id}_${normalizedChannel}`,
+    workspaceId,
+    channel: normalizedChannel,
+    label: `Assigned Twilio number (${number.phoneNumber})`,
+    fromAddress: number.phoneNumber,
+    messagingServiceSid: "",
+    whatsappContentSid: "",
+    whatsappContentVariables: {},
+    isDefault: true,
+    active: true,
+    source: "assigned_twilio_number"
+  };
+}
+
+function messagingSenderForWorkspace(workspaceId, channel) {
+  const configured = resolveMessagingSender(store.state, workspaceId, channel);
+  const assigned = assignedNumberMessagingSender(workspaceId, channel);
+  if (!configured) return assigned;
+  if (configured.fromAddress || configured.messagingServiceSid || !assigned) return configured;
+  return {
+    ...assigned,
+    ...configured,
+    fromAddress: assigned.fromAddress,
+    messagingServiceSid: assigned.messagingServiceSid,
+    source: "messaging_sender_with_assigned_twilio_number"
+  };
+}
+
 function decryptWorkspaceOpenAiKey(workspace) {
   if (!workspace?.openAiKeyEncrypted) return "";
   try {
@@ -115,6 +164,23 @@ function decryptWorkspaceOpenAiKey(workspace) {
 
 function hasWorkspaceOpenAiKey(workspace) {
   return Boolean(decryptWorkspaceOpenAiKey(workspace));
+}
+
+function saveWorkspaceOpenAiKey(workspace, apiKey) {
+  const key = String(apiKey || "").trim();
+  if (!workspace || !key) return false;
+  workspace.openAiKeyEncrypted = encryptSecret(key, process.env.KEY_ENCRYPTION_SECRET);
+  workspace.openAiKeyMasked = maskSecret(key);
+  workspace.updatedAt = nowIso();
+  return true;
+}
+
+function clearWorkspaceOpenAiKey(workspace) {
+  if (!workspace) return false;
+  workspace.openAiKeyEncrypted = "";
+  workspace.openAiKeyMasked = "";
+  workspace.updatedAt = nowIso();
+  return true;
 }
 
 function userFromRequest(request) {
@@ -171,6 +237,7 @@ function adminState() {
       updatedAt: workspace.updatedAt
     })),
     twilioNumbers: store.state.twilioNumbers,
+    messagingSenders: store.state.messagingSenders || [],
     auditLogs: store.state.auditLogs.slice(0, 100)
   };
 }
@@ -181,6 +248,7 @@ function publicState(request) {
   const workspace = workspaceById(workspaceId);
   const assignedNumber = assignedNumberForWorkspace(workspaceId);
   const telephonyStatus = telephony.status();
+  const messagingStatus = messaging.status();
   const scoped = scopeStateToWorkspace(store.state, workspaceId);
   return {
     business: scoped.business,
@@ -189,6 +257,9 @@ function publicState(request) {
     knowledgeBase: scoped.knowledgeBase,
     callLogs: scoped.callLogs,
     followUps: scoped.followUps,
+    messagingSenders: scoped.messagingSenders,
+    messageThreads: scoped.messageThreads,
+    messageLogs: scoped.messageLogs,
     currentUser: sanitizeUser(user),
     workspace: workspace
       ? {
@@ -205,6 +276,10 @@ function publicState(request) {
       ...telephonyStatus,
       assignedFromNumber: assignedNumber?.phoneNumber || "",
       liveReady: telephonyStatus.liveReady && Boolean(assignedNumber)
+    },
+    messaging: {
+      ...messagingStatus,
+      liveReady: messagingStatus.liveReady && Boolean(assignedNumber || (scoped.messagingSenders || []).some((sender) => sender.active !== false))
     }
   };
 }
@@ -247,6 +322,31 @@ function assignTwilioNumberToWorkspace(numberId, workspaceId) {
   number.updatedAt = nowIso();
   workspace.assignedTwilioNumberId = numberId;
   workspace.updatedAt = nowIso();
+}
+
+function normalizeMessagingSenderPayload(body, existing = {}) {
+  const channel = normalizeChannel(body.channel ?? existing.channel);
+  return {
+    workspaceId: String(body.workspaceId ?? existing.workspaceId ?? "").trim(),
+    channel,
+    label: String(body.label ?? existing.label ?? "").trim(),
+    fromAddress: String(body.fromAddress ?? existing.fromAddress ?? "").trim(),
+    messagingServiceSid: String(body.messagingServiceSid ?? existing.messagingServiceSid ?? "").trim(),
+    whatsappContentSid: String(body.whatsappContentSid ?? existing.whatsappContentSid ?? "").trim(),
+    whatsappContentVariables: parseTemplateVariables(body.whatsappContentVariables ?? existing.whatsappContentVariables ?? {}),
+    isDefault: body.isDefault === undefined ? Boolean(existing.isDefault) : Boolean(body.isDefault),
+    active: body.active === undefined ? existing.active !== false : Boolean(body.active)
+  };
+}
+
+function applyDefaultMessagingSender(sender) {
+  if (!sender.isDefault) return;
+  for (const item of store.state.messagingSenders || []) {
+    if (item.id !== sender.id && item.workspaceId === sender.workspaceId && item.channel === sender.channel) {
+      item.isDefault = false;
+      item.updatedAt = nowIso();
+    }
+  }
 }
 
 function normalizeRole(value) {
@@ -306,6 +406,233 @@ function eligibleContacts(campaign) {
     }
     return targetTags.some((tag) => contact.tags.includes(tag));
   });
+}
+
+function normalizeMessageChannels(value) {
+  const raw = Array.isArray(value) ? value : String(value || "").split(",");
+  return [...new Set(raw.map(normalizeChannel).filter(Boolean))];
+}
+
+function messageChannelsForCampaign(campaign) {
+  return normalizeMessageChannels(campaign.messageChannels);
+}
+
+function normalizeSmsBody(value) {
+  return String(value || "").trim();
+}
+
+function normalizeCampaignMessaging(body, existing = {}) {
+  const nextChannels = body.messageChannels === undefined ? existing.messageChannels || [] : body.messageChannels;
+  return {
+    messageChannels: normalizeMessageChannels(nextChannels),
+    smsBody: normalizeSmsBody(body.smsBody === undefined ? existing.smsBody || "" : body.smsBody),
+    whatsappContentSid: String(body.whatsappContentSid === undefined ? existing.whatsappContentSid || "" : body.whatsappContentSid).trim(),
+    whatsappContentVariables: parseTemplateVariables(
+      body.whatsappContentVariables === undefined ? existing.whatsappContentVariables || {} : body.whatsappContentVariables
+    ),
+    messageAiEnabled: body.messageAiEnabled === undefined ? existing.messageAiEnabled !== false : Boolean(body.messageAiEnabled)
+  };
+}
+
+function knowledgeForWorkspace(workspaceId) {
+  return store.state.knowledgeBase.filter((item) => item.workspaceId === workspaceId);
+}
+
+function messagingReadinessError(campaign, channels = messageChannelsForCampaign(campaign)) {
+  if (!channels.length) return "Enable SMS or WhatsApp for this campaign before scheduling messages.";
+  for (const channel of channels) {
+    const sender = messagingSenderForWorkspace(campaign.workspaceId, channel);
+    if (!sender) return `Assign an active ${channel.toUpperCase()} sender to this workspace before scheduling messages.`;
+    if (channel === "sms" && !campaign.smsBody) return "Add an SMS body before scheduling SMS messages.";
+    if (channel === "whatsapp" && !(campaign.whatsappContentSid || sender.whatsappContentSid)) {
+      return "Add an approved WhatsApp ContentSid before scheduling WhatsApp messages.";
+    }
+  }
+  return "";
+}
+
+function eligibleMessagingContacts(campaign, channel) {
+  return eligibleContacts(campaign).filter((contact) => !channelOptedOut(contact, channel));
+}
+
+function findMessageThread(id, workspaceId = "") {
+  return (store.state.messageThreads || []).find((thread) => thread.id === id && (!workspaceId || thread.workspaceId === workspaceId));
+}
+
+function findLatestCampaignThread({ workspaceId, contactId, channel }) {
+  return (store.state.messageThreads || [])
+    .filter(
+      (thread) =>
+        thread.workspaceId === workspaceId &&
+        thread.contactId === contactId &&
+        thread.channel === channel &&
+        thread.status === "active"
+    )
+    .sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || "")))[0];
+}
+
+function upsertMessageThread({ campaign, contact, channel }) {
+  store.state.messageThreads ||= [];
+  let thread = store.state.messageThreads.find(
+    (item) => item.workspaceId === campaign.workspaceId && item.campaignId === campaign.id && item.contactId === contact.id && item.channel === channel
+  );
+  if (!thread) {
+    thread = {
+      id: createId("thread"),
+      workspaceId: campaign.workspaceId,
+      campaignId: campaign.id,
+      contactId: contact.id,
+      channel,
+      status: "active",
+      aiEnabled: campaign.messageAiEnabled !== false,
+      handoffRequired: false,
+      aiStoppedReason: "",
+      lastInboundAt: "",
+      lastOutboundAt: "",
+      createdAt: nowIso(),
+      updatedAt: nowIso()
+    };
+    store.state.messageThreads.unshift(thread);
+  } else {
+    thread.status = "active";
+    thread.aiEnabled = campaign.messageAiEnabled !== false;
+    thread.updatedAt = nowIso();
+  }
+  return thread;
+}
+
+function createMessageLog({
+  workspaceId,
+  campaignId = "",
+  contactId = "",
+  threadId = "",
+  channel,
+  direction,
+  body = "",
+  contentSid = "",
+  contentVariables = {},
+  status = "creating",
+  providerMessageId = "",
+  error = ""
+}) {
+  const log = {
+    id: createId("msg"),
+    workspaceId,
+    campaignId,
+    contactId,
+    threadId,
+    channel,
+    direction,
+    body,
+    contentSid,
+    contentVariables,
+    status,
+    provider: messaging.status().provider,
+    providerMessageId,
+    error,
+    createdAt: nowIso(),
+    updatedAt: nowIso()
+  };
+  store.state.messageLogs ||= [];
+  store.state.messageLogs.unshift(log);
+  return log;
+}
+
+function messageContext(campaign, contact) {
+  return {
+    business: businessForWorkspace(campaign.workspaceId),
+    campaign,
+    contact
+  };
+}
+
+function renderCampaignMessage({ campaign, contact, channel, sender = null }) {
+  const context = messageContext(campaign, contact);
+  if (channel === "whatsapp") {
+    const variableMapping = {
+      ...(sender?.whatsappContentVariables || {}),
+      ...(campaign.whatsappContentVariables || {})
+    };
+    return {
+      body: "",
+      contentSid: campaign.whatsappContentSid || sender?.whatsappContentSid || "",
+      contentVariables: renderContentVariables(variableMapping, context)
+    };
+  }
+  const fallback = "Hi {{customer_name}}, {{business_name}} wanted to invite you to {{campaign_name}} at {{location}}.";
+  return {
+    body: renderMessageTemplate(campaign.smsBody || fallback, context),
+    contentSid: "",
+    contentVariables: {}
+  };
+}
+
+async function sendOutboundMessage(log, { to, sender }) {
+  try {
+    const result = await messaging.sendMessage({
+      channel: log.channel,
+      to,
+      body: log.body,
+      contentSid: log.contentSid,
+      contentVariables: log.contentVariables,
+      sender,
+      messageLogId: log.id
+    });
+    log.status = result.status;
+    log.provider = result.provider;
+    log.providerMessageId = result.providerMessageId;
+    log.providerNote = result.note || "";
+    log.error = "";
+    log.sentAt = nowIso();
+    log.updatedAt = nowIso();
+    return { messageLogId: log.id, contactId: log.contactId, channel: log.channel, status: log.status };
+  } catch (error) {
+    log.status = "failed";
+    log.error = error.message;
+    log.updatedAt = nowIso();
+    return { messageLogId: log.id, contactId: log.contactId, channel: log.channel, status: "failed", error: error.message };
+  }
+}
+
+function findWorkspaceByInboundAddress(address, channel) {
+  const normalized = normalizePhoneAddress(address);
+  const sender = (store.state.messagingSenders || []).find((item) => {
+    if (item.channel !== channel || item.active === false || !item.fromAddress) return false;
+    return normalizePhoneAddress(item.fromAddress) === normalized;
+  });
+  if (sender) return exactWorkspaceById(sender.workspaceId);
+
+  const assignedNumber = (store.state.twilioNumbers || []).find((number) => number.active !== false && normalizePhoneAddress(number.phoneNumber) === normalized);
+  return assignedNumber?.workspaceId ? exactWorkspaceById(assignedNumber.workspaceId) : null;
+}
+
+function findContactByPhone(workspaceId, phone) {
+  const normalized = normalizePhoneAddress(phone);
+  return store.state.contacts.find((contact) => contact.workspaceId === workspaceId && normalizePhoneAddress(contact.phone) === normalized) || null;
+}
+
+function createMessageFollowUp({ thread, campaign, contact, question, source = "message_inbound" }) {
+  const text = String(question || "").trim();
+  if (!text) return null;
+  store.state.followUps ||= [];
+  const existing = store.state.followUps.find(
+    (item) => item.threadId === thread.id && item.question?.trim().toLowerCase() === text.toLowerCase() && item.status !== "closed"
+  );
+  if (existing) return existing;
+  const followUp = {
+    id: createId("followup"),
+    workspaceId: thread.workspaceId,
+    callLogId: "",
+    threadId: thread.id,
+    campaignId: campaign.id,
+    contactId: contact.id,
+    question: text,
+    source,
+    status: "open",
+    createdAt: nowIso()
+  };
+  store.state.followUps.unshift(followUp);
+  return followUp;
 }
 
 function normalizeCallMode(value) {
@@ -591,6 +918,8 @@ async function handleApi(request, response, pathname) {
 
     store.state.contacts = store.state.contacts.filter((item) => !(item.id === contactId && item.workspaceId === workspaceId));
     store.state.callLogs = store.state.callLogs.filter((log) => !(log.contactId === contactId && log.workspaceId === workspaceId));
+    store.state.messageThreads = (store.state.messageThreads || []).filter((thread) => !(thread.contactId === contactId && thread.workspaceId === workspaceId));
+    store.state.messageLogs = (store.state.messageLogs || []).filter((log) => !(log.contactId === contactId && log.workspaceId === workspaceId));
     store.state.followUps = store.state.followUps.filter((item) => !(item.contactId === contactId && item.workspaceId === workspaceId));
     recordAudit({ user, workspaceId, action: "contact.deleted", entityType: "contact", entityId: contact.id });
     store.save();
@@ -616,6 +945,7 @@ async function handleApi(request, response, pathname) {
       objective: String(body.objective || "").trim(),
       scriptNotes: String(body.scriptNotes || "").trim(),
       scriptOverride: String(body.scriptOverride || "").trim(),
+      ...normalizeCampaignMessaging(body),
       targetTags: String(body.targetTags || "")
         .split(",")
         .map((tag) => tag.trim())
@@ -658,6 +988,7 @@ async function handleApi(request, response, pathname) {
       objective: String(body.objective || "").trim(),
       scriptNotes: String(body.scriptNotes || "").trim(),
       scriptOverride: String(body.scriptOverride || "").trim(),
+      ...normalizeCampaignMessaging(body, campaign),
       targetTags: String(body.targetTags || "")
         .split(",")
         .map((tag) => tag.trim())
@@ -770,6 +1101,88 @@ async function handleApi(request, response, pathname) {
       contact: sampleContact
     });
     sendJson(response, 200, { script, sampleContact });
+    return;
+  }
+
+  if (request.method === "POST" && pathname.match(/^\/api\/campaigns\/[^/]+\/messages\/preview$/)) {
+    const campaignId = pathname.split("/")[3];
+    const campaign = findCampaign(campaignId, workspaceId);
+    if (!campaign) {
+      notFound(response);
+      return;
+    }
+    const body = await readBody(request);
+    const contact =
+      findContact(body.contactId, workspaceId) ||
+      eligibleContacts(campaign)[0] ||
+      store.state.contacts.find((item) => item.workspaceId === workspaceId) || { name: "there", phone: "" };
+    const channels = messageChannelsForCampaign(campaign);
+    const preview = Object.fromEntries(
+      channels.map((channel) => {
+        const sender = messagingSenderForWorkspace(workspaceId, channel);
+        const rendered = renderCampaignMessage({ campaign, contact, channel, sender });
+        return [
+          channel,
+          {
+            ...rendered,
+            sender: sender?.label || sender?.fromAddress || sender?.messagingServiceSid || "",
+            to: formatAddress(channel, contact.phone || "")
+          }
+        ];
+      })
+    );
+    sendJson(response, 200, { sampleContact: contact, preview, readinessError: messagingReadinessError(campaign, channels) });
+    return;
+  }
+
+  if (request.method === "POST" && pathname.match(/^\/api\/campaigns\/[^/]+\/messages\/schedule$/)) {
+    const campaignId = pathname.split("/")[3];
+    const campaign = findCampaign(campaignId, workspaceId);
+    if (!campaign) {
+      notFound(response);
+      return;
+    }
+
+    const channels = messageChannelsForCampaign(campaign);
+    const readinessError = messagingReadinessError(campaign, channels);
+    if (readinessError) {
+      sendJson(response, 400, { error: readinessError });
+      return;
+    }
+
+    const results = [];
+    for (const channel of channels) {
+      const sender = messagingSenderForWorkspace(workspaceId, channel);
+      for (const contact of eligibleMessagingContacts(campaign, channel)) {
+        const thread = upsertMessageThread({ campaign, contact, channel });
+        const rendered = renderCampaignMessage({ campaign, contact, channel, sender });
+        const log = createMessageLog({
+          workspaceId,
+          campaignId: campaign.id,
+          contactId: contact.id,
+          threadId: thread.id,
+          channel,
+          direction: "outbound",
+          ...rendered
+        });
+        thread.lastOutboundAt = nowIso();
+        thread.updatedAt = nowIso();
+        results.push(await sendOutboundMessage(log, { to: contact.phone, sender }));
+      }
+    }
+
+    campaign.messageScheduledAt = nowIso();
+    campaign.status = campaign.status === "draft" ? "scheduled" : campaign.status;
+    recordAudit({
+      user,
+      workspaceId,
+      action: "campaign.messages_scheduled",
+      entityType: "campaign",
+      entityId: campaign.id,
+      details: { count: results.length, channels }
+    });
+    store.save();
+    sendJson(response, 200, { results, state: publicState(request) });
     return;
   }
 
@@ -916,6 +1329,30 @@ async function handleApi(request, response, pathname) {
     return;
   }
 
+  if (request.method === "GET" && pathname === "/api/messages") {
+    const scoped = scopeStateToWorkspace(store.state, workspaceId);
+    sendJson(response, 200, { messageLogs: scoped.messageLogs, messageThreads: scoped.messageThreads });
+    return;
+  }
+
+  if (request.method === "POST" && pathname.match(/^\/api\/message-threads\/[^/]+\/reset-ai$/)) {
+    const threadId = pathname.split("/")[3];
+    const thread = findMessageThread(threadId, workspaceId);
+    if (!thread) {
+      notFound(response);
+      return;
+    }
+    thread.status = "active";
+    thread.handoffRequired = false;
+    thread.aiStoppedReason = "";
+    thread.aiEnabled = true;
+    thread.updatedAt = nowIso();
+    recordAudit({ user, workspaceId, action: "message_thread.ai_reset", entityType: "message_thread", entityId: thread.id });
+    store.save();
+    sendJson(response, 200, { thread, state: publicState(request) });
+    return;
+  }
+
   if (request.method === "POST" && pathname.match(/^\/api\/calls\/[^/]+\/call-again$/)) {
     const originalCallId = pathname.split("/")[3];
     const originalCall = store.state.callLogs.find((log) => log.id === originalCallId && log.workspaceId === workspaceId);
@@ -999,9 +1436,7 @@ async function handleApi(request, response, pathname) {
       sendJson(response, 400, { error: "OpenAI API key is required." });
       return;
     }
-    workspace.openAiKeyEncrypted = encryptSecret(apiKey, process.env.KEY_ENCRYPTION_SECRET);
-    workspace.openAiKeyMasked = maskSecret(apiKey);
-    workspace.updatedAt = nowIso();
+    saveWorkspaceOpenAiKey(workspace, apiKey);
     recordAudit({ user, workspaceId, action: "credentials.openai_key_saved", entityType: "workspace", entityId: workspaceId });
     store.save();
     sendJson(response, 200, { workspace: publicState(request).workspace, state: publicState(request) });
@@ -1009,9 +1444,7 @@ async function handleApi(request, response, pathname) {
   }
 
   if (request.method === "DELETE" && pathname === "/api/workspace/openai-key") {
-    workspace.openAiKeyEncrypted = "";
-    workspace.openAiKeyMasked = "";
-    workspace.updatedAt = nowIso();
+    clearWorkspaceOpenAiKey(workspace);
     recordAudit({ user, workspaceId, action: "credentials.openai_key_removed", entityType: "workspace", entityId: workspaceId });
     store.save();
     sendJson(response, 200, { workspace: publicState(request).workspace, state: publicState(request) });
@@ -1053,9 +1486,19 @@ async function handleApi(request, response, pathname) {
         createdAt: now,
         updatedAt: now
       };
+      saveWorkspaceOpenAiKey(workspaceRecord, body.openAiApiKey);
       store.state.workspaces.push(workspaceRecord);
       if (body.assignedTwilioNumberId) assignTwilioNumberToWorkspace(String(body.assignedTwilioNumberId), workspaceRecord.id);
       recordAudit({ user: adminUser, workspaceId: workspaceRecord.id, action: "workspace.created", entityType: "workspace", entityId: workspaceRecord.id });
+      if (workspaceRecord.openAiKeyEncrypted) {
+        recordAudit({
+          user: adminUser,
+          workspaceId: workspaceRecord.id,
+          action: "credentials.openai_key_saved_by_admin",
+          entityType: "workspace",
+          entityId: workspaceRecord.id
+        });
+      }
       store.save();
       sendJson(response, 201, { workspace: workspaceRecord, state: publicState(request) });
       return;
@@ -1079,6 +1522,24 @@ async function handleApi(request, response, pathname) {
         if (previousNumber) previousNumber.workspaceId = "";
         targetWorkspace.assignedTwilioNumberId = "";
         if (body.assignedTwilioNumberId) assignTwilioNumberToWorkspace(String(body.assignedTwilioNumberId), targetWorkspace.id);
+      }
+      if (body.clearOpenAiKey) {
+        clearWorkspaceOpenAiKey(targetWorkspace);
+        recordAudit({
+          user: adminUser,
+          workspaceId: targetWorkspace.id,
+          action: "credentials.openai_key_removed_by_admin",
+          entityType: "workspace",
+          entityId: targetWorkspace.id
+        });
+      } else if (saveWorkspaceOpenAiKey(targetWorkspace, body.openAiApiKey)) {
+        recordAudit({
+          user: adminUser,
+          workspaceId: targetWorkspace.id,
+          action: "credentials.openai_key_saved_by_admin",
+          entityType: "workspace",
+          entityId: targetWorkspace.id
+        });
       }
       targetWorkspace.business.updatedAt = nowIso();
       targetWorkspace.updatedAt = nowIso();
@@ -1195,9 +1656,255 @@ async function handleApi(request, response, pathname) {
       sendJson(response, 200, { number, state: publicState(request) });
       return;
     }
+
+    if (request.method === "POST" && pathname === "/api/admin/messaging-senders") {
+      const body = await readBody(request);
+      const now = nowIso();
+      const next = normalizeMessagingSenderPayload(body);
+      if (!exactWorkspaceById(next.workspaceId) || !next.channel) {
+        sendJson(response, 400, { error: "Workspace and channel are required." });
+        return;
+      }
+      if (!next.fromAddress && !next.messagingServiceSid && !assignedNumberForWorkspace(next.workspaceId)) {
+        sendJson(response, 400, { error: "Assign a workspace Twilio number, or add a From address / Messaging Service SID for this sender." });
+        return;
+      }
+      const sender = {
+        id: createId("sender"),
+        ...next,
+        createdAt: now,
+        updatedAt: now
+      };
+      store.state.messagingSenders ||= [];
+      store.state.messagingSenders.push(sender);
+      applyDefaultMessagingSender(sender);
+      recordAudit({
+        user: adminUser,
+        workspaceId: sender.workspaceId,
+        action: "messaging_sender.created",
+        entityType: "messaging_sender",
+        entityId: sender.id,
+        details: { channel: sender.channel }
+      });
+      store.save();
+      sendJson(response, 201, { sender, state: publicState(request) });
+      return;
+    }
+
+    if (request.method === "PUT" && pathname.match(/^\/api\/admin\/messaging-senders\/[^/]+$/)) {
+      const senderId = pathname.split("/")[4];
+      const sender = (store.state.messagingSenders || []).find((item) => item.id === senderId);
+      if (!sender) {
+        notFound(response);
+        return;
+      }
+      const body = await readBody(request);
+      const next = normalizeMessagingSenderPayload(body, sender);
+      if (!exactWorkspaceById(next.workspaceId) || !next.channel) {
+        sendJson(response, 400, { error: "Workspace and channel are required." });
+        return;
+      }
+      if (!next.fromAddress && !next.messagingServiceSid && !assignedNumberForWorkspace(next.workspaceId)) {
+        sendJson(response, 400, { error: "Assign a workspace Twilio number, or add a From address / Messaging Service SID for this sender." });
+        return;
+      }
+      Object.assign(sender, next, { updatedAt: nowIso() });
+      applyDefaultMessagingSender(sender);
+      recordAudit({
+        user: adminUser,
+        workspaceId: sender.workspaceId,
+        action: "messaging_sender.updated",
+        entityType: "messaging_sender",
+        entityId: sender.id,
+        details: { channel: sender.channel }
+      });
+      store.save();
+      sendJson(response, 200, { sender, state: publicState(request) });
+      return;
+    }
+
+    if (request.method === "DELETE" && pathname.match(/^\/api\/admin\/messaging-senders\/[^/]+$/)) {
+      const senderId = pathname.split("/")[4];
+      const sender = (store.state.messagingSenders || []).find((item) => item.id === senderId);
+      if (!sender) {
+        notFound(response);
+        return;
+      }
+      store.state.messagingSenders = (store.state.messagingSenders || []).filter((item) => item.id !== senderId);
+      recordAudit({
+        user: adminUser,
+        workspaceId: sender.workspaceId,
+        action: "messaging_sender.deleted",
+        entityType: "messaging_sender",
+        entityId: sender.id,
+        details: { channel: sender.channel }
+      });
+      store.save();
+      sendJson(response, 200, { sender, state: publicState(request) });
+      return;
+    }
   }
 
   notFound(response);
+}
+
+async function handleMessaging(request, response, pathname) {
+  if (request.method !== "POST") {
+    notFound(response);
+    return;
+  }
+
+  const body = await readBody(request);
+  if (!validateTwilioSignature({ request, pathname, params: body, env: process.env })) {
+    sendText(response, 403, "invalid signature");
+    return;
+  }
+
+  if (pathname.match(/^\/messaging\/status\/[^/]+$/)) {
+    const messageLogId = pathname.split("/")[3];
+    const log = (store.state.messageLogs || []).find((item) => item.id === messageLogId);
+    if (!log) {
+      sendText(response, 200, "ok");
+      return;
+    }
+    log.status = body.MessageStatus || body.SmsStatus || log.status;
+    log.providerMessageId = body.MessageSid || body.SmsSid || log.providerMessageId || "";
+    log.error = body.ErrorMessage || body.ErrorCode || "";
+    log.updatedAt = nowIso();
+    store.save();
+    sendText(response, 200, "ok");
+    return;
+  }
+
+  if (pathname !== "/messaging/inbound") {
+    notFound(response);
+    return;
+  }
+
+  const providerMessageId = body.MessageSid || body.SmsSid || "";
+  if (providerMessageId && (store.state.messageLogs || []).some((log) => log.direction === "inbound" && log.providerMessageId === providerMessageId)) {
+    sendText(response, 200, "ok");
+    return;
+  }
+
+  const from = body.From || "";
+  const to = body.To || "";
+  const inboundText = String(body.Body || "").trim();
+  const channel = /^whatsapp:/i.test(from) || /^whatsapp:/i.test(to) ? "whatsapp" : "sms";
+  const workspace = findWorkspaceByInboundAddress(to, channel);
+  if (!workspace) {
+    sendText(response, 200, "ok");
+    return;
+  }
+
+  const contact = findContactByPhone(workspace.id, from);
+  const thread = contact ? findLatestCampaignThread({ workspaceId: workspace.id, contactId: contact.id, channel }) : null;
+  const campaign = thread ? findCampaign(thread.campaignId, workspace.id) : null;
+  const inboundLog = createMessageLog({
+    workspaceId: workspace.id,
+    campaignId: campaign?.id || "",
+    contactId: contact?.id || "",
+    threadId: thread?.id || "",
+    channel,
+    direction: "inbound",
+    body: inboundText,
+    status: "received",
+    providerMessageId
+  });
+
+  if (thread) {
+    thread.lastInboundAt = nowIso();
+    thread.updatedAt = nowIso();
+  }
+
+  if (!contact || !thread || !campaign) {
+    store.save();
+    sendText(response, 200, "ok");
+    return;
+  }
+
+  const sender = messagingSenderForWorkspace(workspace.id, channel);
+  if (isMessagingOptOut(inboundText)) {
+    contact.optedOut = true;
+    contact.optedOutAt = nowIso();
+    setChannelOptOut(contact, channel, true);
+    thread.status = "opted_out";
+    thread.aiStoppedReason = "opt_out";
+    thread.updatedAt = nowIso();
+    const reply = createMessageLog({
+      workspaceId: workspace.id,
+      campaignId: campaign.id,
+      contactId: contact.id,
+      threadId: thread.id,
+      channel,
+      direction: "outbound",
+      body: "You are opted out and will not receive future messages or calls.",
+      status: "creating"
+    });
+    await sendOutboundMessage(reply, { to: contact.phone, sender });
+    recordAudit({ user: null, workspaceId: workspace.id, action: "contact.opted_out_by_message", entityType: "contact", entityId: contact.id });
+    store.save();
+    sendText(response, 200, "ok");
+    return;
+  }
+
+  if (contact.optedOut || channelOptedOut(contact, channel) || thread.handoffRequired || thread.aiEnabled === false || campaign.messageAiEnabled === false) {
+    store.save();
+    sendText(response, 200, "ok");
+    return;
+  }
+
+  const aiReply = await createMessagingAiReply({
+    apiKey: decryptWorkspaceOpenAiKey(workspace),
+    business: businessForWorkspace(workspace.id),
+    campaign,
+    contact,
+    knowledgeBase: knowledgeForWorkspace(workspace.id),
+    inboundText
+  });
+
+  if (aiReply.optOut) {
+    contact.optedOut = true;
+    contact.optedOutAt = nowIso();
+    setChannelOptOut(contact, channel, true);
+    thread.status = "opted_out";
+    thread.aiStoppedReason = "opt_out";
+  }
+
+  if (aiReply.followUpRequired || aiReply.handoffRequired) {
+    createMessageFollowUp({
+      thread,
+      campaign,
+      contact,
+      question: inboundText,
+      source: aiReply.error ? "message_ai_error" : "message_ai_handoff"
+    });
+  }
+
+  if (aiReply.handoffRequired || !aiReply.canAnswer || aiReply.error) {
+    thread.handoffRequired = true;
+    thread.aiStoppedReason = aiReply.error || "handoff_required";
+  }
+
+  if (aiReply.replyText) {
+    const replyLog = createMessageLog({
+      workspaceId: workspace.id,
+      campaignId: campaign.id,
+      contactId: contact.id,
+      threadId: thread.id,
+      channel,
+      direction: "outbound",
+      body: aiReply.replyText,
+      status: "creating"
+    });
+    await sendOutboundMessage(replyLog, { to: contact.phone, sender });
+    thread.lastOutboundAt = nowIso();
+  }
+
+  inboundLog.aiReply = aiReply;
+  thread.updatedAt = nowIso();
+  store.save();
+  sendText(response, 200, "ok");
 }
 
 async function handleVoice(request, response, pathname) {
@@ -1381,6 +2088,10 @@ function createServerInstance() {
         await handleVoice(request, response, url.pathname);
         return;
       }
+      if (url.pathname.startsWith("/messaging/")) {
+        await handleMessaging(request, response, url.pathname);
+        return;
+      }
       if (authEnabled() && !userFromRequest(request) && !isPublicStaticPath(url.pathname)) {
         response.writeHead(302, { Location: "/login.html" });
         response.end();
@@ -1401,7 +2112,8 @@ return createServerInstance();
 export function createAppServer(options = {}) {
   return createHandlers({
     store: options.store || (defaultStore ||= new SQLiteStore()),
-    telephony: options.telephony || (defaultTelephony ||= new TelephonyAdapter())
+    telephony: options.telephony || (defaultTelephony ||= new TelephonyAdapter()),
+    messaging: options.messaging || (defaultMessaging ||= new MessagingAdapter())
   });
 }
 
