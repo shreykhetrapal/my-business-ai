@@ -57,6 +57,9 @@ const elements = {
   messagingSenderForm: document.querySelector("#messagingSenderForm"),
   messagingSendersTable: document.querySelector("#messagingSendersTable"),
   deleteMessagingSender: document.querySelector("#deleteMessagingSender"),
+  whatsappTemplateForm: document.querySelector("#whatsappTemplateForm"),
+  whatsappTemplatesTable: document.querySelector("#whatsappTemplatesTable"),
+  deleteWhatsappTemplate: document.querySelector("#deleteWhatsappTemplate"),
   logoutButton: document.querySelector("#logoutButton"),
   toast: document.querySelector("#toast")
 };
@@ -109,6 +112,46 @@ function campaignById(id) {
   return state.data.campaigns.find((campaign) => campaign.id === id);
 }
 
+function phoneCountry(phone = "") {
+  const value = String(phone || "").replace(/^whatsapp:/i, "");
+  if (value.startsWith("+91")) return "India";
+  if (value.startsWith("+1")) return "US";
+  return value ? "International" : "Unknown";
+}
+
+function lastWhatsappThreadForContact(contactId) {
+  return (state.data.messageThreads || [])
+    .filter((thread) => thread.contactId === contactId && thread.channel === "whatsapp")
+    .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))[0];
+}
+
+function whatsappTypeLabel(value = "") {
+  return (
+    {
+      event: "Event invite",
+      sale: "Sale announcement",
+      appointment: "Appointment / booking",
+      followup: "Requested follow-up",
+      order: "Order / pickup / reservation",
+      custom: "Custom approved template"
+    }[value] || "Event invite"
+  );
+}
+
+function whatsappTemplateOptions(selected = "", campaignType = "") {
+  const templates = state.data.whatsappTemplates || [];
+  const type = campaignType || "event";
+  return [
+    `<option value="" ${!selected ? "selected" : ""}>Automatic best match</option>`,
+    ...templates
+      .filter((template) => template.active !== false && (!campaignType || (template.campaignTypes || []).includes(type)))
+      .map(
+        (template) =>
+          `<option value="${escapeHtml(template.id)}" ${selected === template.id ? "selected" : ""}>${escapeHtml(template.label)} · ${escapeHtml(template.category || "")}</option>`
+      )
+  ].join("");
+}
+
 function formValue(name, value) {
   const field = elements.campaignForm.elements[name];
   if (field) field.value = value ?? "";
@@ -144,8 +187,15 @@ function campaignToForm(campaign) {
   setCheckedValues("messageChannels", campaign?.messageChannels || []);
   formChecked("messageAiEnabled", campaign?.messageAiEnabled !== false);
   formValue("smsBody", campaign?.smsBody || "");
-  formValue("whatsappContentSid", campaign?.whatsappContentSid || "");
-  formValue("whatsappContentVariables", JSON.stringify(campaign?.whatsappContentVariables || {}, null, 2));
+  formValue("whatsappCampaignType", campaign?.whatsappCampaignType || campaign?.type || "event");
+  formValue("whatsappStrategy", campaign?.whatsappStrategy || "reply_to_unlock");
+  formValue("whatsappFallbackChannels", (campaign?.whatsappFallbackChannels || []).join(","));
+  formValue("whatsappPostReplyBody", campaign?.whatsappPostReplyBody || "");
+  const templateField = elements.campaignForm.elements.whatsappTemplateId;
+  if (templateField) {
+    templateField.innerHTML = whatsappTemplateOptions(campaign?.whatsappTemplateId || "", campaign?.whatsappCampaignType || campaign?.type || "event");
+    templateField.value = campaign?.whatsappTemplateId || "";
+  }
   elements.messagePreviewResult.textContent = "";
   elements.campaignEditorTitle.textContent = campaign ? "Edit campaign" : "Create campaign";
 }
@@ -189,9 +239,9 @@ function tagPills(tags = []) {
 }
 
 function statusClass(status) {
-  if (["queued", "queued_local", "scheduled", "completed", "in_progress", "in-progress"].includes(status)) return "ok";
+  if (["queued", "queued_local", "scheduled", "completed", "in_progress", "in-progress", "sent", "delivered", "read", "received"].includes(status)) return "ok";
   if (["creating", "draft", "waiting_to_call", "initiated", "ringing", "answered", "ending"].includes(status)) return "warn";
-  if (["failed", "opted_out", "canceled", "ending_failed"].includes(status)) return "danger";
+  if (["failed", "opted_out", "canceled", "ending_failed", "undelivered", "fallback_required"].includes(status)) return "danger";
   return "";
 }
 
@@ -380,6 +430,7 @@ function renderContactsTable() {
           <tr>
             <th>Name</th>
             <th>Phone</th>
+            <th>Region</th>
             <th>Consent</th>
             <th>Tags</th>
             <th>Status</th>
@@ -388,10 +439,13 @@ function renderContactsTable() {
         </thead>
         <tbody>
           ${state.data.contacts
-            .map((contact) => `
+            .map((contact) => {
+              const whatsappThread = lastWhatsappThreadForContact(contact.id);
+              return `
               <tr>
                 <td>${escapeHtml(contact.name)}</td>
                 <td>${escapeHtml(contact.phone)}</td>
+                <td>${escapeHtml(phoneCountry(contact.phone))}</td>
                 <td>${escapeHtml(contact.consentSource || "missing")}</td>
                 <td><div class="pill-row">${tagPills(contact.tags)}</div></td>
                 <td>
@@ -400,6 +454,7 @@ function renderContactsTable() {
                     <span class="pill ${contact.channelOptOuts?.sms ? "danger-pill" : ""}">SMS ${contact.channelOptOuts?.sms ? "off" : "on"}</span>
                     <span class="pill ${contact.channelOptOuts?.whatsapp ? "danger-pill" : ""}">WhatsApp ${contact.channelOptOuts?.whatsapp ? "off" : "on"}</span>
                   </div>
+                  <small>${whatsappThread?.lastCustomerReplyAt ? `Last WhatsApp reply: ${escapeHtml(formatDate(whatsappThread.lastCustomerReplyAt))}` : "No WhatsApp reply yet"}</small>
                 </td>
                 <td>
                   <button
@@ -413,8 +468,9 @@ function renderContactsTable() {
                   <button class="secondary-action delete-contact" data-contact-id="${escapeHtml(contact.id)}">Delete</button>
                 </td>
               </tr>
-            `)
-            .join("") || '<tr><td colspan="6">No customers yet.</td></tr>'}
+            `;
+            })
+            .join("") || '<tr><td colspan="7">No customers yet.</td></tr>'}
         </tbody>
       </table>
     </div>
@@ -495,6 +551,7 @@ function renderMessagesTable() {
             <th>Channel</th>
             <th>Direction</th>
             <th>Status</th>
+            <th>Type / window</th>
             <th>Message</th>
             <th>Created</th>
             <th>Action</th>
@@ -506,6 +563,8 @@ function renderMessagesTable() {
               const contact = contactById(log.contactId);
               const campaign = campaignById(log.campaignId);
               const thread = threadById(log.threadId);
+              const windowText = thread?.serviceWindowExpiresAt ? `Window until ${formatDate(thread.serviceWindowExpiresAt)}` : "No active window";
+              const messageText = log.body || log.templateName || log.contentSid || "Template message";
               return `
                 <tr>
                   <td>${escapeHtml(contact?.name || "Unknown")}<br><small>${escapeHtml(contact?.phone || "")}</small></td>
@@ -513,7 +572,8 @@ function renderMessagesTable() {
                   <td>${escapeHtml(log.channel || "")}</td>
                   <td>${escapeHtml(log.direction || "")}</td>
                   <td><span class="status ${statusClass(log.status)}">${escapeHtml(log.status || "")}</span><br><small>${escapeHtml(log.providerMessageId || log.error || "")}</small></td>
-                  <td>${escapeHtml(log.body || log.contentSid || "Template message")}</td>
+                  <td>${escapeHtml(log.messageKind || "message")}<br><small>${escapeHtml(windowText)}</small></td>
+                  <td>${escapeHtml(messageText)}${log.error ? `<br><small>${escapeHtml(log.error)}</small>` : ""}</td>
                   <td>${formatDate(log.createdAt)}</td>
                   <td>
                     ${
@@ -525,7 +585,7 @@ function renderMessagesTable() {
                 </tr>
               `;
             })
-            .join("") || '<tr><td colspan="8">No messages yet.</td></tr>'}
+            .join("") || '<tr><td colspan="9">No messages yet.</td></tr>'}
         </tbody>
       </table>
     </div>
@@ -601,6 +661,15 @@ function resetMessagingSenderForm() {
   elements.messagingSenderForm.elements.workspaceId.innerHTML = workspaceOptions(elements.messagingSenderForm.elements.workspaceId.value || state.data.workspace?.id || "");
 }
 
+function resetWhatsappTemplateForm() {
+  elements.whatsappTemplateForm.reset();
+  elements.whatsappTemplateForm.elements.id.value = "";
+  elements.whatsappTemplateForm.elements.active.checked = true;
+  elements.whatsappTemplateForm.elements.language.value = "en";
+  elements.whatsappTemplateForm.elements.supportedCountries.value = "ALL";
+  elements.whatsappTemplateForm.elements.workspaceId.innerHTML = workspaceOptions(elements.whatsappTemplateForm.elements.workspaceId.value || state.data.workspace?.id || "");
+}
+
 function renderAdmin() {
   if (!state.data.admin) return;
 
@@ -608,6 +677,7 @@ function renderAdmin() {
   elements.userForm.elements.workspaceId.innerHTML = workspaceOptions(elements.userForm.elements.workspaceId.value);
   elements.twilioNumberForm.elements.workspaceId.innerHTML = workspaceOptions(elements.twilioNumberForm.elements.workspaceId.value, true);
   elements.messagingSenderForm.elements.workspaceId.innerHTML = workspaceOptions(elements.messagingSenderForm.elements.workspaceId.value || state.data.workspace?.id || "");
+  elements.whatsappTemplateForm.elements.workspaceId.innerHTML = workspaceOptions(elements.whatsappTemplateForm.elements.workspaceId.value || state.data.workspace?.id || "");
 
   elements.workspacesTable.innerHTML = `
     <div class="table-wrap">
@@ -686,7 +756,7 @@ function renderAdmin() {
               const route = sender.messagingServiceSid || sender.fromAddress || "Missing route";
               return `
                 <tr>
-                  <td><strong>${escapeHtml(sender.label || "Sender")}</strong><br><small>${escapeHtml(sender.whatsappContentSid || "")}</small></td>
+                  <td><strong>${escapeHtml(sender.label || "Sender")}</strong></td>
                   <td>${escapeHtml(workspace?.name || "Missing")}</td>
                   <td>${escapeHtml(sender.channel || "")}</td>
                   <td>${escapeHtml(route)}</td>
@@ -699,6 +769,32 @@ function renderAdmin() {
               `;
             })
             .join("") || '<tr><td colspan="6">No messaging senders yet.</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  elements.whatsappTemplatesTable.innerHTML = `
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Template</th><th>Workspace</th><th>Type</th><th>Category</th><th>Countries</th><th>Status</th><th>Action</th></tr></thead>
+        <tbody>
+          ${(state.data.admin.whatsappTemplates || [])
+            .map((template) => {
+              const workspace = state.data.admin.workspaces.find((item) => item.id === template.workspaceId);
+              return `
+                <tr>
+                  <td><strong>${escapeHtml(template.label || "Template")}</strong><br><small>${escapeHtml(template.contentSid || "")}</small></td>
+                  <td>${escapeHtml(workspace?.name || "Missing")}</td>
+                  <td>${escapeHtml((template.campaignTypes || []).map(whatsappTypeLabel).join(", "))}</td>
+                  <td>${escapeHtml(template.category || "")}</td>
+                  <td>${escapeHtml((template.supportedCountries || ["ALL"]).join(", "))}</td>
+                  <td><span class="status ${template.active === false ? "danger" : "ok"}">${template.active === false ? "inactive" : "active"}</span></td>
+                  <td><button class="secondary-action edit-whatsapp-template" data-template-id="${escapeHtml(template.id)}">Edit</button></td>
+                </tr>
+              `;
+            })
+            .join("") || '<tr><td colspan="7">No WhatsApp templates yet.</td></tr>'}
         </tbody>
       </table>
     </div>
@@ -769,6 +865,11 @@ elements.campaignForm.addEventListener("submit", async (event) => {
   }
 });
 
+elements.campaignForm.elements.whatsappCampaignType.addEventListener("change", () => {
+  const field = elements.campaignForm.elements.whatsappTemplateId;
+  field.innerHTML = whatsappTemplateOptions(field.value, elements.campaignForm.elements.whatsappCampaignType.value);
+});
+
 elements.previewScript.addEventListener("click", async () => {
   const campaign = activeCampaign();
   if (!campaign) {
@@ -835,7 +936,16 @@ elements.previewMessages.addEventListener("click", async () => {
       .map(([channel, item]) => {
         const detail =
           channel === "whatsapp"
-            ? `ContentSid: ${escapeHtml(item.contentSid || "missing")}<br>Variables: ${escapeHtml(JSON.stringify(item.contentVariables || {}))}`
+            ? [
+                `Kind: ${escapeHtml(item.messageKind || "whatsapp")}`,
+                item.templateName ? `Opener: ${escapeHtml(item.templateName)}` : "",
+                item.contentSid ? `ContentSid: ${escapeHtml(item.contentSid)}` : "",
+                item.contentVariables ? `Variables: ${escapeHtml(JSON.stringify(item.contentVariables || {}))}` : "",
+                item.body ? `Freeform: ${escapeHtml(item.body)}` : "",
+                item.error ? `<strong>${escapeHtml(item.error)}</strong>` : ""
+              ]
+                .filter(Boolean)
+                .join("<br>")
             : escapeHtml(item.body || "");
         return `<strong>${escapeHtml(channel.toUpperCase())}</strong> to ${escapeHtml(payload.sampleContact?.name || "sample")}<br>${detail}`;
       })
@@ -1204,8 +1314,12 @@ elements.messagingSendersTable.addEventListener("click", (event) => {
   elements.messagingSenderForm.elements.channel.value = sender.channel || "sms";
   elements.messagingSenderForm.elements.fromAddress.value = sender.fromAddress || "";
   elements.messagingSenderForm.elements.messagingServiceSid.value = sender.messagingServiceSid || "";
-  elements.messagingSenderForm.elements.whatsappContentSid.value = sender.whatsappContentSid || "";
-  elements.messagingSenderForm.elements.whatsappContentVariables.value = JSON.stringify(sender.whatsappContentVariables || {}, null, 2);
+  if (elements.messagingSenderForm.elements.whatsappContentSid) {
+    elements.messagingSenderForm.elements.whatsappContentSid.value = sender.whatsappContentSid || "";
+  }
+  if (elements.messagingSenderForm.elements.whatsappContentVariables) {
+    elements.messagingSenderForm.elements.whatsappContentVariables.value = JSON.stringify(sender.whatsappContentVariables || {}, null, 2);
+  }
   elements.messagingSenderForm.elements.isDefault.checked = Boolean(sender.isDefault);
   elements.messagingSenderForm.elements.active.checked = sender.active !== false;
 });
@@ -1245,6 +1359,66 @@ elements.deleteMessagingSender.addEventListener("click", async () => {
     state.data = payload.state;
     resetMessagingSenderForm();
     showToast("Messaging sender deleted.");
+    render();
+  } catch (error) {
+    showToast(error.message);
+  }
+});
+
+elements.whatsappTemplatesTable.addEventListener("click", (event) => {
+  const button = event.target.closest(".edit-whatsapp-template");
+  if (!button) return;
+  const template = state.data.admin?.whatsappTemplates.find((item) => item.id === button.dataset.templateId);
+  if (!template) return;
+  elements.whatsappTemplateForm.elements.id.value = template.id;
+  elements.whatsappTemplateForm.elements.label.value = template.label || "";
+  elements.whatsappTemplateForm.elements.workspaceId.innerHTML = workspaceOptions(template.workspaceId || "");
+  elements.whatsappTemplateForm.elements.campaignTypes.value = (template.campaignTypes || ["event"])[0] || "event";
+  elements.whatsappTemplateForm.elements.category.value = template.category || "marketing";
+  elements.whatsappTemplateForm.elements.language.value = template.language || "en";
+  elements.whatsappTemplateForm.elements.supportedCountries.value = (template.supportedCountries || ["ALL"]).join(", ");
+  elements.whatsappTemplateForm.elements.contentSid.value = template.contentSid || "";
+  elements.whatsappTemplateForm.elements.variables.value = JSON.stringify(template.variables || {}, null, 2);
+  elements.whatsappTemplateForm.elements.bodyPreview.value = template.bodyPreview || "";
+  elements.whatsappTemplateForm.elements.fallbackChannels.value = (template.fallbackChannels || []).join(",");
+  elements.whatsappTemplateForm.elements.active.checked = template.active !== false;
+});
+
+elements.whatsappTemplateForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const formData = new FormData(elements.whatsappTemplateForm);
+  const body = {
+    ...Object.fromEntries(formData),
+    campaignTypes: [formData.get("campaignTypes")],
+    active: formData.has("active")
+  };
+  const id = body.id;
+  delete body.id;
+  try {
+    const payload = id
+      ? await api(`/api/admin/whatsapp-templates/${id}`, { method: "PUT", body })
+      : await api("/api/admin/whatsapp-templates", { method: "POST", body });
+    state.data = payload.state;
+    resetWhatsappTemplateForm();
+    showToast(id ? "WhatsApp template saved." : "WhatsApp template added.");
+    render();
+  } catch (error) {
+    showToast(error.message);
+  }
+});
+
+elements.deleteWhatsappTemplate.addEventListener("click", async () => {
+  const id = elements.whatsappTemplateForm.elements.id.value;
+  if (!id) {
+    resetWhatsappTemplateForm();
+    return;
+  }
+  if (!window.confirm("Delete this WhatsApp template?")) return;
+  try {
+    const payload = await api(`/api/admin/whatsapp-templates/${id}`, { method: "DELETE", body: {} });
+    state.data = payload.state;
+    resetWhatsappTemplateForm();
+    showToast("WhatsApp template deleted.");
     render();
   } catch (error) {
     showToast(error.message);

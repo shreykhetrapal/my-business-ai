@@ -1,6 +1,9 @@
 import crypto from "node:crypto";
 
 const supportedChannels = new Set(["sms", "whatsapp"]);
+const supportedFallbackChannels = new Set(["sms", "call"]);
+const whatsappCampaignTypes = new Set(["event", "sale", "appointment", "followup", "order", "custom"]);
+const whatsappTemplateCategories = new Set(["marketing", "utility", "authentication"]);
 
 function text(value) {
   return String(value ?? "").trim();
@@ -11,10 +14,44 @@ export function normalizeChannel(value) {
   return supportedChannels.has(channel) ? channel : "";
 }
 
+export function normalizeWhatsappCampaignType(value, fallback = "event") {
+  const type = text(value).toLowerCase().replaceAll("-", "_");
+  if (whatsappCampaignTypes.has(type)) return type;
+  if (type === "requested_followup" || type === "follow_up") return "followup";
+  if (type === "booking" || type === "appointment_booking") return "appointment";
+  if (type === "reservation" || type === "pickup") return "order";
+  return whatsappCampaignTypes.has(fallback) ? fallback : "event";
+}
+
+export function normalizeWhatsappTemplateCategory(value) {
+  const category = text(value).toLowerCase();
+  return whatsappTemplateCategories.has(category) ? category : "marketing";
+}
+
+export function normalizeFallbackChannels(value) {
+  const raw = Array.isArray(value) ? value : String(value || "").split(",");
+  return [...new Set(raw.map((item) => text(item).toLowerCase()).filter((item) => supportedFallbackChannels.has(item)))];
+}
+
 export function normalizePhoneAddress(value) {
   const raw = text(value);
   if (!raw) return "";
   return raw.replace(/^whatsapp:/i, "").replace(/[^\d+]/g, "");
+}
+
+export function countryCodeForPhone(value) {
+  const address = normalizePhoneAddress(value);
+  if (address.startsWith("+91")) return "IN";
+  if (address.startsWith("+1")) return "US";
+  return address ? "OTHER" : "";
+}
+
+export function countryLabelForPhone(value) {
+  const country = countryCodeForPhone(value);
+  if (country === "US") return "US";
+  if (country === "IN") return "India";
+  if (country === "OTHER") return "International";
+  return "Unknown";
 }
 
 export function formatAddress(channel, value) {
@@ -58,6 +95,62 @@ export function renderContentVariables(mapping, context) {
   return Object.fromEntries(
     Object.entries(parseTemplateVariables(mapping)).map(([key, value]) => [key, renderMessageTemplate(value, context)])
   );
+}
+
+export function normalizeSupportedCountries(value) {
+  const raw = Array.isArray(value) ? value : String(value || "ALL").split(",");
+  const countries = raw
+    .map((item) => text(item).toUpperCase().replace(/\s+/g, "_"))
+    .filter(Boolean);
+  return [...new Set(countries.length ? countries : ["ALL"])];
+}
+
+export function templateSupportsCountry(template, countryCode) {
+  const countries = normalizeSupportedCountries(template?.supportedCountries || ["ALL"]);
+  if (countries.includes("ALL")) return true;
+  if (countryCode && countries.includes(countryCode)) return true;
+  if (countryCode && countryCode !== "US" && countries.includes("NON_US")) return true;
+  return false;
+}
+
+export function resolveWhatsappTemplate(templates = [], { workspaceId = "", campaignType = "event", templateId = "", countryCode = "" } = {}) {
+  const normalizedType = normalizeWhatsappCampaignType(campaignType);
+  const candidates = (templates || []).filter((template) => template.workspaceId === workspaceId && template.active !== false);
+  if (templateId) {
+    return candidates.find((template) => template.id === templateId) || null;
+  }
+  return (
+    candidates.find((template) => {
+      const types = Array.isArray(template.campaignTypes) && template.campaignTypes.length ? template.campaignTypes : [template.campaignType || "custom"];
+      return types.map((type) => normalizeWhatsappCampaignType(type)).includes(normalizedType) && templateSupportsCountry(template, countryCode);
+    }) || null
+  );
+}
+
+export function isWhatsappTemplateBlockedForRecipient(template, contact = {}) {
+  if (!template) return false;
+  return normalizeWhatsappTemplateCategory(template.category) === "marketing" && countryCodeForPhone(contact.phone) === "US";
+}
+
+export function serviceWindowExpiryFrom(value = new Date()) {
+  const base = value instanceof Date ? value : new Date(value);
+  const safeBase = Number.isNaN(base.getTime()) ? new Date() : base;
+  return new Date(safeBase.getTime() + 24 * 60 * 60 * 1000).toISOString();
+}
+
+export function isWhatsappServiceWindowOpen(thread = {}, value = new Date()) {
+  if (!thread || thread.channel !== "whatsapp" || !thread.serviceWindowExpiresAt) return false;
+  const now = value instanceof Date ? value : new Date(value);
+  const expires = new Date(thread.serviceWindowExpiresAt);
+  return !Number.isNaN(now.getTime()) && !Number.isNaN(expires.getTime()) && expires.getTime() > now.getTime();
+}
+
+export function friendlyMessagingError(codeOrMessage = "") {
+  const value = String(codeOrMessage || "");
+  if (value === "63049" || value.includes("63049")) {
+    return "Meta limited or blocked this WhatsApp marketing template. Use calls/SMS for US marketing, or retry non-US marketing later.";
+  }
+  return value;
 }
 
 export function isMessagingOptOut(value) {

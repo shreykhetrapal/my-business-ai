@@ -66,6 +66,7 @@ export const initialState = {
   callLogs: [],
   followUps: [],
   messagingSenders: [],
+  whatsappTemplates: [],
   messageThreads: [],
   messageLogs: []
 };

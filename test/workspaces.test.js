@@ -163,6 +163,22 @@ function baseState({ assignSecondNumber = true, secondOpenAiKey = true } = {}) {
         updatedAt: now
       }
     ],
+    whatsappTemplates: [
+      {
+        id: "template_one",
+        workspaceId: "workspace_one",
+        label: "Event opener",
+        campaignTypes: ["event"],
+        category: "marketing",
+        language: "en",
+        contentSid: "HXONE",
+        variables: { 1: "{{customer_name}}" },
+        supportedCountries: ["NON_US"],
+        active: true,
+        createdAt: now,
+        updatedAt: now
+      }
+    ],
     messageThreads: [
       {
         id: "thread_one",
@@ -215,7 +231,9 @@ test("SQLiteStore persists workspace-scoped records", () => {
   assert.deepEqual(scopeStateToWorkspace(reloaded.state, "workspace_one").contacts.map((contact) => contact.id), ["contact_one"]);
   assert.deepEqual(scopeStateToWorkspace(reloaded.state, "workspace_two").contacts.map((contact) => contact.id), ["contact_two"]);
   assert.deepEqual(scopeStateToWorkspace(reloaded.state, "workspace_one").messageLogs.map((log) => log.id), ["msg_one"]);
+  assert.deepEqual(scopeStateToWorkspace(reloaded.state, "workspace_one").whatsappTemplates.map((template) => template.id), ["template_one"]);
   assert.deepEqual(scopeStateToWorkspace(reloaded.state, "workspace_two").messageLogs, []);
+  assert.deepEqual(scopeStateToWorkspace(reloaded.state, "workspace_two").whatsappTemplates, []);
 });
 
 test("workspace access policy allows admin across workspaces and limits users", () => {

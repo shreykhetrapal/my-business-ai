@@ -128,6 +128,7 @@ function initialWorkspaceState(sourceState = initialState, env = process.env) {
     callLogs: withWorkspace(sourceState.callLogs || [], workspace.id),
     followUps: withWorkspace(sourceState.followUps || [], workspace.id),
     messagingSenders: withWorkspace(sourceState.messagingSenders || [], workspace.id),
+    whatsappTemplates: withWorkspace(sourceState.whatsappTemplates || [], workspace.id),
     messageThreads: withWorkspace(sourceState.messageThreads || [], workspace.id),
     messageLogs: withWorkspace(sourceState.messageLogs || [], workspace.id),
     users: [
@@ -168,6 +169,7 @@ export function normalizeWorkspaceState(state = {}, env = process.env) {
     callLogs: withWorkspace(state.callLogs || [], fallbackWorkspaceId),
     followUps: withWorkspace(state.followUps || [], fallbackWorkspaceId),
     messagingSenders: withWorkspace(state.messagingSenders || [], fallbackWorkspaceId),
+    whatsappTemplates: withWorkspace(state.whatsappTemplates || [], fallbackWorkspaceId),
     messageThreads: withWorkspace(state.messageThreads || [], fallbackWorkspaceId),
     messageLogs: withWorkspace(state.messageLogs || [], fallbackWorkspaceId),
     users: state.users?.length ? state.users : seeded.users,
@@ -191,6 +193,7 @@ export function scopeStateToWorkspace(state, workspaceId) {
     callLogs: (state.callLogs || []).filter((item) => item.workspaceId === workspaceId),
     followUps: (state.followUps || []).filter((item) => item.workspaceId === workspaceId),
     messagingSenders: (state.messagingSenders || []).filter((item) => item.workspaceId === workspaceId),
+    whatsappTemplates: (state.whatsappTemplates || []).filter((item) => item.workspaceId === workspaceId),
     messageThreads: (state.messageThreads || []).filter((item) => item.workspaceId === workspaceId),
     messageLogs: (state.messageLogs || []).filter((item) => item.workspaceId === workspaceId)
   };
@@ -288,6 +291,11 @@ export class SQLiteStore {
         workspaceId TEXT NOT NULL,
         dataJson TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS whatsapp_templates (
+        id TEXT PRIMARY KEY,
+        workspaceId TEXT NOT NULL,
+        dataJson TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS message_threads (
         id TEXT PRIMARY KEY,
         workspaceId TEXT NOT NULL,
@@ -346,6 +354,7 @@ export class SQLiteStore {
       callLogs: this.readJsonTable("call_logs"),
       followUps: this.readJsonTable("follow_ups"),
       messagingSenders: this.readJsonTable("messaging_senders"),
+      whatsappTemplates: this.readJsonTable("whatsapp_templates"),
       messageThreads: this.readJsonTable("message_threads"),
       messageLogs: this.readJsonTable("message_logs"),
       users: this.db.prepare("SELECT * FROM users ORDER BY createdAt ASC").all(),
@@ -390,6 +399,7 @@ export class SQLiteStore {
         DELETE FROM call_logs;
         DELETE FROM follow_ups;
         DELETE FROM messaging_senders;
+        DELETE FROM whatsapp_templates;
         DELETE FROM message_threads;
         DELETE FROM message_logs;
         DELETE FROM audit_logs;
@@ -441,6 +451,7 @@ export class SQLiteStore {
       this.writeJsonTable("call_logs", state.callLogs);
       this.writeJsonTable("follow_ups", state.followUps);
       this.writeJsonTable("messaging_senders", state.messagingSenders);
+      this.writeJsonTable("whatsapp_templates", state.whatsappTemplates);
       this.writeJsonTable("message_threads", state.messageThreads);
       this.writeJsonTable("message_logs", state.messageLogs);
 

@@ -151,7 +151,7 @@
               <div class="span-2 messaging-editor">
                 <div class="section-label">
                   <strong>Messaging</strong>
-                  <span>Messages reuse the assigned Twilio caller number by default. WhatsApp still needs an approved Twilio template ContentSid.</span>
+                  <span>Messages reuse the assigned Twilio caller number by default. WhatsApp uses an approved opener, then sends your editable message after the customer replies.</span>
                 </div>
                 <div class="channel-toggle-row">
                   <label class="checkbox-row">
@@ -164,21 +164,48 @@
                   </label>
                   <label class="checkbox-row">
                     <input type="checkbox" name="messageAiEnabled" value="true" checked />
-                    <span>AI replies on active message threads</span>
+                    <span>Answer replies after customer responds</span>
                   </label>
                 </div>
               </div>
               <label class="span-2">
-                SMS body
+                SMS / fallback body
                 <textarea name="smsBody" rows="4" placeholder="Hi {{customer_name}}, {{business_name}} wanted to invite you to {{campaign_name}} at {{location}}."></textarea>
               </label>
               <label>
-                WhatsApp ContentSid
-                <input name="whatsappContentSid" placeholder="HXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" />
+                WhatsApp campaign type
+                <select name="whatsappCampaignType">
+                  <option value="event">Event invite</option>
+                  <option value="sale">Sale announcement</option>
+                  <option value="appointment">Appointment / booking</option>
+                  <option value="followup">Requested follow-up</option>
+                  <option value="order">Order / pickup / reservation</option>
+                  <option value="custom">Custom approved template</option>
+                </select>
               </label>
               <label>
-                WhatsApp variables JSON
-                <textarea name="whatsappContentVariables" rows="3" spellcheck="false" placeholder='{"1":"{{customer_name}}","2":"{{campaign_name}}"}'></textarea>
+                WhatsApp opener
+                <select name="whatsappTemplateId"></select>
+              </label>
+              <label>
+                If WhatsApp cannot send
+                <select name="whatsappFallbackChannels">
+                  <option value="">Show fallback warning</option>
+                  <option value="sms">Suggest SMS</option>
+                  <option value="call">Suggest call</option>
+                  <option value="sms,call">Suggest SMS or call</option>
+                </select>
+              </label>
+              <label>
+                WhatsApp strategy
+                <select name="whatsappStrategy">
+                  <option value="reply_to_unlock">Reply-to-unlock</option>
+                  <option value="direct_template">Direct approved template</option>
+                </select>
+              </label>
+              <label class="span-2">
+                After-reply WhatsApp message
+                <textarea name="whatsappPostReplyBody" rows="5" placeholder="Hi {{customer_name}}, thanks for replying. Here are the details for {{campaign_name}}: {{offer}} at {{location}}."></textarea>
               </label>
               <div class="span-2 campaign-customer-section">
                 <div class="section-label">
@@ -487,14 +514,6 @@
                 Messaging Service SID
                 <input name="messagingServiceSid" placeholder="Optional override: MGxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" />
               </label>
-              <label>
-                WhatsApp default ContentSid
-                <input name="whatsappContentSid" placeholder="HXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" />
-              </label>
-              <label class="span-2">
-                Default WhatsApp variables JSON
-                <textarea name="whatsappContentVariables" rows="2" spellcheck="false" placeholder='{"1":"{{customer_name}}"}'></textarea>
-              </label>
               <label class="checkbox-row">
                 <input name="isDefault" type="checkbox" />
                 <span>Default for workspace/channel</span>
@@ -509,6 +528,83 @@
               </div>
             </form>
             <div id="messagingSendersTable" class="tab-content"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Admin</p>
+                <h3>WhatsApp template library</h3>
+              </div>
+            </div>
+            <form id="whatsappTemplateForm" class="form-grid compact-form">
+              <input type="hidden" name="id" />
+              <label>
+                Label
+                <input name="label" required placeholder="Event invite opener" />
+              </label>
+              <label>
+                Workspace
+                <select name="workspaceId" required></select>
+              </label>
+              <label>
+                Campaign type
+                <select name="campaignTypes">
+                  <option value="event">Event invite</option>
+                  <option value="sale">Sale announcement</option>
+                  <option value="appointment">Appointment / booking</option>
+                  <option value="followup">Requested follow-up</option>
+                  <option value="order">Order / pickup / reservation</option>
+                  <option value="custom">Custom approved template</option>
+                </select>
+              </label>
+              <label>
+                Category
+                <select name="category">
+                  <option value="marketing">Marketing</option>
+                  <option value="utility">Utility</option>
+                  <option value="authentication">Authentication</option>
+                </select>
+              </label>
+              <label>
+                Language
+                <input name="language" placeholder="en" />
+              </label>
+              <label>
+                Supported countries
+                <input name="supportedCountries" placeholder="ALL, IN, NON_US, US" />
+              </label>
+              <label class="span-2">
+                Twilio ContentSid
+                <input name="contentSid" required placeholder="HXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" />
+              </label>
+              <label class="span-2">
+                Variables JSON
+                <textarea name="variables" rows="2" spellcheck="false" placeholder='{"1":"{{customer_name}}","2":"{{business_name}}","3":"{{campaign_name}}"}'></textarea>
+              </label>
+              <label class="span-2">
+                Opener preview
+                <textarea name="bodyPreview" rows="3" placeholder="Hi {{1}}, {{2}} has an update about {{3}}. Reply YES and we'll send details."></textarea>
+              </label>
+              <label>
+                Fallback
+                <select name="fallbackChannels">
+                  <option value="">Warn only</option>
+                  <option value="sms">SMS</option>
+                  <option value="call">Call</option>
+                  <option value="sms,call">SMS or call</option>
+                </select>
+              </label>
+              <label class="checkbox-row">
+                <input name="active" type="checkbox" checked />
+                <span>Active</span>
+              </label>
+              <div class="action-row span-2">
+                <button type="submit" class="primary-action">Save template</button>
+                <button id="deleteWhatsappTemplate" type="button" class="secondary-action">Delete template</button>
+              </div>
+            </form>
+            <div id="whatsappTemplatesTable" class="tab-content"></div>
           </div>
         </div>
       </section>

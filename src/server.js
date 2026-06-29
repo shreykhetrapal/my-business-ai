@@ -22,12 +22,23 @@ import {
   MessagingAdapter,
   channelOptedOut,
   formatAddress,
+  countryCodeForPhone,
+  countryLabelForPhone,
+  friendlyMessagingError,
   isMessagingOptOut,
+  isWhatsappServiceWindowOpen,
+  isWhatsappTemplateBlockedForRecipient,
   normalizeChannel,
+  normalizeFallbackChannels,
   normalizePhoneAddress,
   parseTemplateVariables,
   renderContentVariables,
   renderMessageTemplate,
+  resolveWhatsappTemplate,
+  normalizeSupportedCountries,
+  normalizeWhatsappCampaignType,
+  normalizeWhatsappTemplateCategory,
+  serviceWindowExpiryFrom,
   resolveMessagingSender,
   setChannelOptOut
 } from "./messaging.js";
@@ -238,6 +249,7 @@ function adminState() {
     })),
     twilioNumbers: store.state.twilioNumbers,
     messagingSenders: store.state.messagingSenders || [],
+    whatsappTemplates: store.state.whatsappTemplates || [],
     auditLogs: store.state.auditLogs.slice(0, 100)
   };
 }
@@ -258,6 +270,7 @@ function publicState(request) {
     callLogs: scoped.callLogs,
     followUps: scoped.followUps,
     messagingSenders: scoped.messagingSenders,
+    whatsappTemplates: scoped.whatsappTemplates,
     messageThreads: scoped.messageThreads,
     messageLogs: scoped.messageLogs,
     currentUser: sanitizeUser(user),
@@ -335,6 +348,33 @@ function normalizeMessagingSenderPayload(body, existing = {}) {
     whatsappContentSid: String(body.whatsappContentSid ?? existing.whatsappContentSid ?? "").trim(),
     whatsappContentVariables: parseTemplateVariables(body.whatsappContentVariables ?? existing.whatsappContentVariables ?? {}),
     isDefault: body.isDefault === undefined ? Boolean(existing.isDefault) : Boolean(body.isDefault),
+    active: body.active === undefined ? existing.active !== false : Boolean(body.active)
+  };
+}
+
+function normalizeCampaignTypes(value, existing = []) {
+  const raw = Array.isArray(value) ? value : String(value || "").split(",");
+  const types = raw
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .map((item) => normalizeWhatsappCampaignType(item));
+  if (types.length) return [...new Set(types)];
+  return Array.isArray(existing) && existing.length ? existing : ["event"];
+}
+
+function normalizeWhatsappTemplatePayload(body, existing = {}) {
+  const category = normalizeWhatsappTemplateCategory(body.category ?? existing.category);
+  return {
+    workspaceId: String(body.workspaceId ?? existing.workspaceId ?? "").trim(),
+    label: String(body.label ?? existing.label ?? "").trim(),
+    contentSid: String(body.contentSid ?? existing.contentSid ?? "").trim(),
+    category,
+    language: String(body.language ?? existing.language ?? "en").trim() || "en",
+    campaignTypes: normalizeCampaignTypes(body.campaignTypes ?? body.campaignType, existing.campaignTypes),
+    variables: parseTemplateVariables(body.variables ?? existing.variables ?? {}),
+    bodyPreview: String(body.bodyPreview ?? existing.bodyPreview ?? "").trim(),
+    supportedCountries: normalizeSupportedCountries(body.supportedCountries ?? existing.supportedCountries ?? "ALL"),
+    fallbackChannels: normalizeFallbackChannels(body.fallbackChannels ?? body.fallbackChannel ?? existing.fallbackChannels ?? []),
     active: body.active === undefined ? existing.active !== false : Boolean(body.active)
   };
 }
@@ -423,9 +463,22 @@ function normalizeSmsBody(value) {
 
 function normalizeCampaignMessaging(body, existing = {}) {
   const nextChannels = body.messageChannels === undefined ? existing.messageChannels || [] : body.messageChannels;
+  const fallbackType = existing.whatsappCampaignType || existing.type || body.type || "event";
   return {
     messageChannels: normalizeMessageChannels(nextChannels),
     smsBody: normalizeSmsBody(body.smsBody === undefined ? existing.smsBody || "" : body.smsBody),
+    whatsappCampaignType: normalizeWhatsappCampaignType(
+      body.whatsappCampaignType === undefined ? fallbackType : body.whatsappCampaignType,
+      normalizeWhatsappCampaignType(fallbackType)
+    ),
+    whatsappTemplateId: String(body.whatsappTemplateId === undefined ? existing.whatsappTemplateId || "" : body.whatsappTemplateId).trim(),
+    whatsappStrategy: String(body.whatsappStrategy === undefined ? existing.whatsappStrategy || "reply_to_unlock" : body.whatsappStrategy).trim() || "reply_to_unlock",
+    whatsappPostReplyBody: normalizeSmsBody(
+      body.whatsappPostReplyBody === undefined ? existing.whatsappPostReplyBody || "" : body.whatsappPostReplyBody
+    ),
+    whatsappFallbackChannels: normalizeFallbackChannels(
+      body.whatsappFallbackChannels === undefined ? existing.whatsappFallbackChannels || [] : body.whatsappFallbackChannels
+    ),
     whatsappContentSid: String(body.whatsappContentSid === undefined ? existing.whatsappContentSid || "" : body.whatsappContentSid).trim(),
     whatsappContentVariables: parseTemplateVariables(
       body.whatsappContentVariables === undefined ? existing.whatsappContentVariables || {} : body.whatsappContentVariables
@@ -438,14 +491,67 @@ function knowledgeForWorkspace(workspaceId) {
   return store.state.knowledgeBase.filter((item) => item.workspaceId === workspaceId);
 }
 
+function whatsappTemplatesForWorkspace(workspaceId) {
+  return (store.state.whatsappTemplates || []).filter((template) => template.workspaceId === workspaceId);
+}
+
+function legacyCampaignTemplate(campaign, sender = null) {
+  const contentSid = campaign.whatsappContentSid || sender?.whatsappContentSid || "";
+  if (!contentSid) return null;
+  return {
+    id: "legacy_campaign_content_sid",
+    workspaceId: campaign.workspaceId,
+    label: "Campaign ContentSid",
+    contentSid,
+    category: "marketing",
+    language: "en",
+    campaignTypes: [campaign.whatsappCampaignType || campaign.type || "custom"],
+    variables: {
+      ...(sender?.whatsappContentVariables || {}),
+      ...(campaign.whatsappContentVariables || {})
+    },
+    bodyPreview: "",
+    supportedCountries: ["ALL"],
+    fallbackChannels: campaign.whatsappFallbackChannels || [],
+    active: true
+  };
+}
+
+function resolveCampaignWhatsappTemplate(campaign, contact = {}, sender = null) {
+  return (
+    resolveWhatsappTemplate(whatsappTemplatesForWorkspace(campaign.workspaceId), {
+      workspaceId: campaign.workspaceId,
+      campaignType: campaign.whatsappCampaignType || campaign.type,
+      templateId: campaign.whatsappTemplateId || "",
+      countryCode: countryCodeForPhone(contact.phone || "")
+    }) || legacyCampaignTemplate(campaign, sender)
+  );
+}
+
+function defaultWhatsappPostReplyBody(campaign) {
+  return (
+    campaign.whatsappPostReplyBody ||
+    campaign.smsBody ||
+    "Hi {{customer_name}}, {{business_name}} wanted to share details for {{campaign_name}} at {{location}}. {{offer}}"
+  );
+}
+
+function fallbackMessageForBlockedWhatsapp(template, contact, campaign) {
+  const country = countryLabelForPhone(contact.phone);
+  if (countryCodeForPhone(contact.phone) === "US" && normalizeWhatsappTemplateCategory(template?.category) === "marketing") {
+    return "WhatsApp marketing templates cannot be sent to US recipients. Use calls or SMS for this marketing campaign.";
+  }
+  return `WhatsApp opener template is not eligible for this ${country || "recipient"} contact on ${campaign.name}.`;
+}
+
 function messagingReadinessError(campaign, channels = messageChannelsForCampaign(campaign)) {
   if (!channels.length) return "Enable SMS or WhatsApp for this campaign before scheduling messages.";
   for (const channel of channels) {
     const sender = messagingSenderForWorkspace(campaign.workspaceId, channel);
     if (!sender) return `Assign an active ${channel.toUpperCase()} sender to this workspace before scheduling messages.`;
     if (channel === "sms" && !campaign.smsBody) return "Add an SMS body before scheduling SMS messages.";
-    if (channel === "whatsapp" && !(campaign.whatsappContentSid || sender.whatsappContentSid)) {
-      return "Add an approved WhatsApp ContentSid before scheduling WhatsApp messages.";
+    if (channel === "whatsapp" && !resolveCampaignWhatsappTemplate(campaign, {}, sender)) {
+      return "Add an approved WhatsApp opener template in the admin Template Library before scheduling WhatsApp messages.";
     }
   }
   return "";
@@ -489,6 +595,11 @@ function upsertMessageThread({ campaign, contact, channel }) {
       aiStoppedReason: "",
       lastInboundAt: "",
       lastOutboundAt: "",
+      lastCustomerReplyAt: "",
+      serviceWindowExpiresAt: "",
+      openerStatus: "",
+      openerMessageLogId: "",
+      postReplySentAt: "",
       createdAt: nowIso(),
       updatedAt: nowIso()
     };
@@ -511,6 +622,13 @@ function createMessageLog({
   body = "",
   contentSid = "",
   contentVariables = {},
+  messageKind = "",
+  templateId = "",
+  templateName = "",
+  templateCategory = "",
+  fallbackReason = "",
+  fallbackChannels = [],
+  serviceWindowExpiresAt = "",
   status = "creating",
   providerMessageId = "",
   error = ""
@@ -526,6 +644,13 @@ function createMessageLog({
     body,
     contentSid,
     contentVariables,
+    messageKind,
+    templateId,
+    templateName,
+    templateCategory,
+    fallbackReason,
+    fallbackChannels,
+    serviceWindowExpiresAt,
     status,
     provider: messaging.status().provider,
     providerMessageId,
@@ -546,24 +671,65 @@ function messageContext(campaign, contact) {
   };
 }
 
-function renderCampaignMessage({ campaign, contact, channel, sender = null }) {
+function renderCampaignMessage({ campaign, contact, channel, sender = null, thread = null }) {
   const context = messageContext(campaign, contact);
   if (channel === "whatsapp") {
-    const variableMapping = {
-      ...(sender?.whatsappContentVariables || {}),
-      ...(campaign.whatsappContentVariables || {})
-    };
+    if (isWhatsappServiceWindowOpen(thread)) {
+      return {
+        body: renderMessageTemplate(defaultWhatsappPostReplyBody(campaign), context).trim(),
+        contentSid: "",
+        contentVariables: {},
+        messageKind: "whatsapp_freeform",
+        serviceWindowExpiresAt: thread.serviceWindowExpiresAt || ""
+      };
+    }
+
+    const template = resolveCampaignWhatsappTemplate(campaign, contact, sender);
+    if (!template) {
+      return {
+        body: "",
+        contentSid: "",
+        contentVariables: {},
+        messageKind: "whatsapp_missing_template",
+        status: "failed",
+        error: "No approved WhatsApp opener template is configured for this campaign type.",
+        skipSend: true
+      };
+    }
+    if (isWhatsappTemplateBlockedForRecipient(template, contact)) {
+      return {
+        body: "",
+        contentSid: template.contentSid || "",
+        contentVariables: renderContentVariables(template.variables || {}, context),
+        messageKind: "whatsapp_fallback_required",
+        templateId: template.id,
+        templateName: template.label,
+        templateCategory: template.category,
+        fallbackReason: "us_marketing_whatsapp_blocked",
+        fallbackChannels: campaign.whatsappFallbackChannels || template.fallbackChannels || [],
+        status: "fallback_required",
+        error: fallbackMessageForBlockedWhatsapp(template, contact, campaign),
+        skipSend: true
+      };
+    }
     return {
       body: "",
-      contentSid: campaign.whatsappContentSid || sender?.whatsappContentSid || "",
-      contentVariables: renderContentVariables(variableMapping, context)
+      contentSid: template.contentSid,
+      contentVariables: renderContentVariables(template.variables || {}, context),
+      messageKind: "whatsapp_opener_template",
+      templateId: template.id,
+      templateName: template.label,
+      templateCategory: template.category,
+      fallbackChannels: campaign.whatsappFallbackChannels || template.fallbackChannels || [],
+      serviceWindowExpiresAt: thread?.serviceWindowExpiresAt || ""
     };
   }
   const fallback = "Hi {{customer_name}}, {{business_name}} wanted to invite you to {{campaign_name}} at {{location}}.";
   return {
     body: renderMessageTemplate(campaign.smsBody || fallback, context),
     contentSid: "",
-    contentVariables: {}
+    contentVariables: {},
+    messageKind: "sms_campaign"
   };
 }
 
@@ -587,10 +753,11 @@ async function sendOutboundMessage(log, { to, sender }) {
     log.updatedAt = nowIso();
     return { messageLogId: log.id, contactId: log.contactId, channel: log.channel, status: log.status };
   } catch (error) {
+    const friendlyError = friendlyMessagingError(error.message);
     log.status = "failed";
-    log.error = error.message;
+    log.error = friendlyError;
     log.updatedAt = nowIso();
-    return { messageLogId: log.id, contactId: log.contactId, channel: log.channel, status: "failed", error: error.message };
+    return { messageLogId: log.id, contactId: log.contactId, channel: log.channel, status: "failed", error: friendlyError };
   }
 }
 
@@ -1120,13 +1287,15 @@ async function handleApi(request, response, pathname) {
     const preview = Object.fromEntries(
       channels.map((channel) => {
         const sender = messagingSenderForWorkspace(workspaceId, channel);
-        const rendered = renderCampaignMessage({ campaign, contact, channel, sender });
+        const thread = findLatestCampaignThread({ workspaceId, contactId: contact.id, channel });
+        const rendered = renderCampaignMessage({ campaign, contact, channel, sender, thread });
         return [
           channel,
           {
             ...rendered,
             sender: sender?.label || sender?.fromAddress || sender?.messagingServiceSid || "",
-            to: formatAddress(channel, contact.phone || "")
+            to: formatAddress(channel, contact.phone || ""),
+            country: countryLabelForPhone(contact.phone || "")
           }
         ];
       })
@@ -1155,7 +1324,7 @@ async function handleApi(request, response, pathname) {
       const sender = messagingSenderForWorkspace(workspaceId, channel);
       for (const contact of eligibleMessagingContacts(campaign, channel)) {
         const thread = upsertMessageThread({ campaign, contact, channel });
-        const rendered = renderCampaignMessage({ campaign, contact, channel, sender });
+        const rendered = renderCampaignMessage({ campaign, contact, channel, sender, thread });
         const log = createMessageLog({
           workspaceId,
           campaignId: campaign.id,
@@ -1166,8 +1335,20 @@ async function handleApi(request, response, pathname) {
           ...rendered
         });
         thread.lastOutboundAt = nowIso();
+        if (channel === "whatsapp" && rendered.messageKind === "whatsapp_opener_template") {
+          thread.openerStatus = "sent";
+          thread.openerMessageLogId = log.id;
+        }
+        if (channel === "whatsapp" && rendered.messageKind === "whatsapp_fallback_required") {
+          thread.openerStatus = "fallback_required";
+          thread.fallbackReason = rendered.fallbackReason || "";
+        }
         thread.updatedAt = nowIso();
-        results.push(await sendOutboundMessage(log, { to: contact.phone, sender }));
+        if (rendered.skipSend) {
+          results.push({ messageLogId: log.id, contactId: contact.id, channel, status: log.status, error: log.error });
+        } else {
+          results.push(await sendOutboundMessage(log, { to: contact.phone, sender }));
+        }
       }
     }
 
@@ -1743,6 +1924,94 @@ async function handleApi(request, response, pathname) {
       sendJson(response, 200, { sender, state: publicState(request) });
       return;
     }
+
+    if (request.method === "POST" && pathname === "/api/admin/whatsapp-templates") {
+      const body = await readBody(request);
+      const now = nowIso();
+      const next = normalizeWhatsappTemplatePayload(body);
+      if (!exactWorkspaceById(next.workspaceId)) {
+        sendJson(response, 400, { error: "Workspace is required for this WhatsApp template." });
+        return;
+      }
+      if (!next.label || !next.contentSid) {
+        sendJson(response, 400, { error: "Template label and Twilio ContentSid are required." });
+        return;
+      }
+      const template = {
+        id: createId("wa_template"),
+        ...next,
+        createdAt: now,
+        updatedAt: now
+      };
+      store.state.whatsappTemplates ||= [];
+      store.state.whatsappTemplates.push(template);
+      recordAudit({
+        user: adminUser,
+        workspaceId: template.workspaceId,
+        action: "whatsapp_template.created",
+        entityType: "whatsapp_template",
+        entityId: template.id,
+        details: { category: template.category, campaignTypes: template.campaignTypes }
+      });
+      store.save();
+      sendJson(response, 201, { template, state: publicState(request) });
+      return;
+    }
+
+    if (request.method === "PUT" && pathname.match(/^\/api\/admin\/whatsapp-templates\/[^/]+$/)) {
+      const templateId = pathname.split("/")[4];
+      const template = (store.state.whatsappTemplates || []).find((item) => item.id === templateId);
+      if (!template) {
+        notFound(response);
+        return;
+      }
+      const body = await readBody(request);
+      const next = normalizeWhatsappTemplatePayload(body, template);
+      if (!exactWorkspaceById(next.workspaceId)) {
+        sendJson(response, 400, { error: "Workspace is required for this WhatsApp template." });
+        return;
+      }
+      if (!next.label || !next.contentSid) {
+        sendJson(response, 400, { error: "Template label and Twilio ContentSid are required." });
+        return;
+      }
+      Object.assign(template, next, { updatedAt: nowIso() });
+      recordAudit({
+        user: adminUser,
+        workspaceId: template.workspaceId,
+        action: "whatsapp_template.updated",
+        entityType: "whatsapp_template",
+        entityId: template.id,
+        details: { category: template.category, campaignTypes: template.campaignTypes }
+      });
+      store.save();
+      sendJson(response, 200, { template, state: publicState(request) });
+      return;
+    }
+
+    if (request.method === "DELETE" && pathname.match(/^\/api\/admin\/whatsapp-templates\/[^/]+$/)) {
+      const templateId = pathname.split("/")[4];
+      const template = (store.state.whatsappTemplates || []).find((item) => item.id === templateId);
+      if (!template) {
+        notFound(response);
+        return;
+      }
+      store.state.whatsappTemplates = (store.state.whatsappTemplates || []).filter((item) => item.id !== templateId);
+      for (const campaign of store.state.campaigns || []) {
+        if (campaign.whatsappTemplateId === templateId) campaign.whatsappTemplateId = "";
+      }
+      recordAudit({
+        user: adminUser,
+        workspaceId: template.workspaceId,
+        action: "whatsapp_template.deleted",
+        entityType: "whatsapp_template",
+        entityId: template.id,
+        details: { category: template.category, campaignTypes: template.campaignTypes }
+      });
+      store.save();
+      sendJson(response, 200, { template, state: publicState(request) });
+      return;
+    }
   }
 
   notFound(response);
@@ -1769,7 +2038,17 @@ async function handleMessaging(request, response, pathname) {
     }
     log.status = body.MessageStatus || body.SmsStatus || log.status;
     log.providerMessageId = body.MessageSid || body.SmsSid || log.providerMessageId || "";
-    log.error = body.ErrorMessage || body.ErrorCode || "";
+    log.errorCode = body.ErrorCode || "";
+    log.error = friendlyMessagingError(body.ErrorMessage || body.ErrorCode || "");
+    if (log.errorCode === "63049") {
+      log.fallbackReason = "marketing_template_limited";
+      const thread = findMessageThread(log.threadId, log.workspaceId);
+      if (thread) {
+        thread.openerStatus = "limited";
+        thread.fallbackReason = log.fallbackReason;
+        thread.updatedAt = nowIso();
+      }
+    }
     log.updatedAt = nowIso();
     store.save();
     sendText(response, 200, "ok");
@@ -1814,6 +2093,11 @@ async function handleMessaging(request, response, pathname) {
 
   if (thread) {
     thread.lastInboundAt = nowIso();
+    if (channel === "whatsapp") {
+      thread.lastCustomerReplyAt = thread.lastInboundAt;
+      thread.serviceWindowExpiresAt = serviceWindowExpiryFrom(thread.lastInboundAt);
+      thread.openerStatus = thread.openerStatus || "responded";
+    }
     thread.updatedAt = nowIso();
   }
 
@@ -1849,6 +2133,28 @@ async function handleMessaging(request, response, pathname) {
   }
 
   if (contact.optedOut || channelOptedOut(contact, channel) || thread.handoffRequired || thread.aiEnabled === false || campaign.messageAiEnabled === false) {
+    store.save();
+    sendText(response, 200, "ok");
+    return;
+  }
+
+  if (channel === "whatsapp" && !thread.postReplySentAt && campaign.whatsappPostReplyBody) {
+    const replyLog = createMessageLog({
+      workspaceId: workspace.id,
+      campaignId: campaign.id,
+      contactId: contact.id,
+      threadId: thread.id,
+      channel,
+      direction: "outbound",
+      body: renderMessageTemplate(campaign.whatsappPostReplyBody, messageContext(campaign, contact)),
+      messageKind: "whatsapp_after_reply",
+      serviceWindowExpiresAt: thread.serviceWindowExpiresAt || "",
+      status: "creating"
+    });
+    await sendOutboundMessage(replyLog, { to: contact.phone, sender });
+    thread.postReplySentAt = nowIso();
+    thread.lastOutboundAt = thread.postReplySentAt;
+    thread.updatedAt = nowIso();
     store.save();
     sendText(response, 200, "ok");
     return;
@@ -1895,6 +2201,8 @@ async function handleMessaging(request, response, pathname) {
       channel,
       direction: "outbound",
       body: aiReply.replyText,
+      messageKind: "ai_reply",
+      serviceWindowExpiresAt: thread.serviceWindowExpiresAt || "",
       status: "creating"
     });
     await sendOutboundMessage(replyLog, { to: contact.phone, sender });
