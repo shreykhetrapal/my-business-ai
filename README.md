@@ -11,32 +11,6 @@ The app lets a merchant:
 - Schedule outbound voice calls through a telephony adapter.
 - Review call logs and follow-up questions.
 
-## Product workflow
-
-CallerDesk should feel campaign-first for a small-business owner:
-
-1. Add opted-in customers.
-2. Add approved answers for common questions.
-3. Create a campaign for an event, sale, or update.
-4. Choose calls, SMS, WhatsApp, or a mix.
-5. Preview what customers will hear or receive.
-6. Launch the campaign.
-7. Review questions, appointment requests, opt-outs, and other follow-ups in Needs owner.
-
-Regular business users should not need to understand Twilio, webhooks, template IDs, or OpenAI setup. Those belong in Admin setup.
-
-## Admin setup model
-
-Admin prepares each workspace once:
-
-- Create the business workspace and user.
-- Assign a phone number for calls, SMS, and WhatsApp.
-- Save the workspace AI key.
-- Add approved WhatsApp opener templates.
-- Use advanced sender routing only when the assigned workspace number is not enough.
-
-WhatsApp campaigns use a two-step flow: the first outbound WhatsApp message uses an approved opener template, then after the customer replies CallerDesk can send the editable campaign message and AI can answer follow-up questions.
-
 ## Run locally
 
 ```sh

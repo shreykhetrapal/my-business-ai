@@ -12,8 +12,6 @@ const state = {
 const elements = {
   workspaceIdentity: document.querySelector("#workspaceIdentity"),
   telephonyStatus: document.querySelector("#telephonyStatus"),
-  readinessPanel: document.querySelector("#readinessPanel"),
-  nextActionPanel: document.querySelector("#nextActionPanel"),
   metricsGrid: document.querySelector("#metricsGrid"),
   workspaceTabs: document.querySelector(".workspace-tabs"),
   campaignList: document.querySelector("#campaignList"),
@@ -50,7 +48,6 @@ const elements = {
   clearOpenAiKey: document.querySelector("#clearOpenAiKey"),
   adminOpenAiKeyMasked: document.querySelector("#adminOpenAiKeyMasked"),
   newWorkspace: document.querySelector("#newWorkspace"),
-  adminSetupSummary: document.querySelector("#adminSetupSummary"),
   workspaceForm: document.querySelector("#workspaceForm"),
   workspacesTable: document.querySelector("#workspacesTable"),
   userForm: document.querySelector("#userForm"),
@@ -138,53 +135,6 @@ function whatsappTypeLabel(value = "") {
       order: "Order / pickup / reservation",
       custom: "Custom approved template"
     }[value] || "Event invite"
-  );
-}
-
-function messageKindLabel(value = "") {
-  return (
-    {
-      sms_campaign: "Text campaign",
-      whatsapp_opener_template: "First WhatsApp message",
-      whatsapp_after_reply: "After-reply message",
-      whatsapp_freeform: "WhatsApp reply",
-      whatsapp_fallback_required: "Needs another channel",
-      whatsapp_missing_template: "Needs WhatsApp setup",
-      ai_reply: "AI reply"
-    }[value] || "Message"
-  );
-}
-
-function directionLabel(value = "") {
-  if (value === "inbound") return "Customer reply";
-  if (value === "outbound") return "Sent by CallerDesk";
-  return value || "";
-}
-
-function statusLabel(value = "") {
-  return (
-    {
-      queued_local: "Demo queued",
-      queued: "Queued",
-      sent: "Sent",
-      delivered: "Delivered",
-      read: "Read",
-      received: "Received",
-      undelivered: "Not delivered",
-      fallback_required: "Needs fallback",
-      failed: "Failed",
-      completed: "Done",
-      creating: "Starting",
-      draft: "Draft",
-      waiting_to_call: "Waiting",
-      initiated: "Calling",
-      ringing: "Ringing",
-      answered: "Answered",
-      "in-progress": "In progress",
-      in_progress: "In progress",
-      canceled: "Canceled",
-      ending_failed: "Could not end"
-    }[value] || value || ""
   );
 }
 
@@ -327,83 +277,18 @@ function downloadJson(filename, payload) {
 function renderTelephony() {
   const config = state.data.telephony;
   const messaging = state.data.messaging || {};
-  const callsLive = config.mode === "live" && config.liveReady;
-  const messagesLive = messaging.mode === "live" && messaging.liveReady;
-  const mode = callsLive || messagesLive ? "Ready for real customer outreach" : "Demo mode";
-  const details = callsLive || messagesLive ? "Launch only after previewing the campaign." : "Safe to test. No real calls or messages are sent.";
+  const mode = config.mode === "live" && config.liveReady ? "Live calls enabled" : "Dry-run call queue";
+  const messagingMode = messaging.mode === "live" && messaging.liveReady ? "live messaging" : "dry-run messaging";
+  const details =
+    config.mode === "live" && !config.liveReady
+      ? "Live mode needs Twilio credentials, PUBLIC_BASE_URL, and an assigned workspace number."
+      : config.publicBaseUrl
+        ? `Webhook base: ${config.publicBaseUrl} · ${messagingMode}`
+        : "Set TELEPHONY_MODE=live with Twilio credentials to place real calls.";
   const user = state.data.currentUser;
   const workspace = state.data.workspace;
   elements.workspaceIdentity.innerHTML = `<strong>${escapeHtml(workspace?.name || "Workspace")}</strong><br>${escapeHtml(user?.email || "")}`;
   elements.telephonyStatus.innerHTML = `<strong>${mode}</strong><br>${escapeHtml(details)}`;
-}
-
-function readinessItems() {
-  const contactsReady = state.data.contacts.some((contact) => contact.consentSource && !contact.optedOut);
-  const answersReady = state.data.knowledgeBase.length > 0;
-  const campaignReady = state.data.campaigns.length > 0;
-  const callsReady = state.data.telephony.mode === "live" && state.data.telephony.liveReady;
-  const messagesReady = state.data.messaging?.mode === "live" && state.data.messaging?.liveReady;
-  const templatesReady = (state.data.whatsappTemplates || []).some((template) => template.active !== false);
-  const aiReady = Boolean(state.data.workspace?.hasOpenAiKey);
-  return [
-    { label: "Business profile", ready: Boolean(state.data.business?.name), detail: state.data.business?.name || "Add your business name in Settings.", view: "settings" },
-    { label: "Opted-in customers", ready: contactsReady, detail: contactsReady ? "Customers with consent are available." : "Import customers with consent before launch.", view: "customers" },
-    { label: "Approved answers", ready: answersReady, detail: answersReady ? "AI has answers it can use." : "Add common questions so AI knows what to say.", view: "knowledge" },
-    { label: "Calls", ready: callsReady, demo: state.data.telephony.mode !== "live", detail: callsReady ? "Ready to place real calls." : "Demo mode or admin setup needed.", view: "admin" },
-    { label: "Text and WhatsApp", ready: messagesReady, demo: state.data.messaging?.mode !== "live", detail: messagesReady ? "Ready to send messages." : "Demo mode or admin setup needed.", view: "admin" },
-    { label: "WhatsApp openers", ready: templatesReady, detail: templatesReady ? "Approved openers are available." : "Admin needs to add approved WhatsApp openers.", view: "admin" },
-    { label: "AI replies", ready: aiReady, detail: aiReady ? "AI key saved." : "Admin needs to save the AI key.", view: "admin" }
-  ];
-}
-
-function renderReadiness() {
-  const items = readinessItems();
-  const readyCount = items.filter((item) => item.ready).length;
-  elements.readinessPanel.innerHTML = `
-    <div class="readiness-heading">
-      <div>
-        <p class="eyebrow">Launch readiness</p>
-        <h3>${readyCount}/${items.length} ready</h3>
-      </div>
-      <span class="status ${readyCount >= 3 ? "ok" : "warn"}">${readyCount >= 3 ? "Good start" : "Setup needed"}</span>
-    </div>
-    <div class="readiness-list">
-      ${items
-        .map(
-          (item) => `
-            <button type="button" class="readiness-item goto-view" data-view-target="${escapeHtml(item.view)}">
-              <span class="readiness-dot ${item.ready ? "ready" : item.demo ? "demo" : ""}"></span>
-              <span>
-                <strong>${escapeHtml(item.label)}</strong>
-                <small>${escapeHtml(item.detail)}</small>
-              </span>
-            </button>
-          `
-        )
-        .join("")}
-    </div>
-  `;
-}
-
-function renderNextAction() {
-  const followUps = state.data.followUps.filter((item) => item.status !== "closed").length;
-  const contactsReady = state.data.contacts.some((contact) => contact.consentSource && !contact.optedOut);
-  const campaign = activeCampaign();
-  let action = { title: "Create your first campaign", detail: "Start with the event, sale, or update you want customers to know about.", view: "campaigns", cta: "Create campaign" };
-  if (!contactsReady) {
-    action = { title: "Add opted-in customers", detail: "Import customers with a consent source before calling or messaging them.", view: "customers", cta: "Add customers" };
-  } else if (followUps > 0) {
-    action = { title: `${followUps} item${followUps === 1 ? "" : "s"} need your answer`, detail: "Review questions, appointment requests, and handoffs captured by AI.", view: "followups", cta: "Review needs owner" };
-  } else if (campaign) {
-    action = { title: "Preview, then launch", detail: "Check the call and message preview before contacting customers.", view: "campaigns", cta: "Open campaign" };
-  }
-  elements.nextActionPanel.innerHTML = `
-    <div>
-      <strong>${escapeHtml(action.title)}</strong>
-      <span>${escapeHtml(action.detail)}</span>
-    </div>
-    <button type="button" class="primary-action goto-view" data-view-target="${escapeHtml(action.view)}">${escapeHtml(action.cta)}</button>
-  `;
 }
 
 function renderMetrics() {
@@ -412,11 +297,11 @@ function renderMetrics() {
   const scheduled = state.data.callLogs.filter((log) => log.status !== "failed").length;
   const messages = (state.data.messageLogs || []).filter((log) => log.status !== "failed").length;
   const metrics = [
-    ["Customers", state.data.contacts.length, `${optedIn} with consent`],
-    ["Campaigns", state.data.campaigns.length, "Events, sales, and updates"],
-    ["Calls", scheduled, "Queued or completed"],
-    ["Messages", messages, "Texts and WhatsApp"],
-    ["Needs owner", followUps, "Questions and requests"]
+    ["Contacts", state.data.contacts.length, `${optedIn} callable with consent`],
+    ["Campaigns", state.data.campaigns.length, "Popup and sale call flows"],
+    ["Calls", scheduled, "Queued or attempted calls"],
+    ["Messages", messages, "SMS and WhatsApp logs"],
+    ["Follow-ups", followUps, "Questions needing the business"]
   ];
 
   elements.metricsGrid.innerHTML = metrics
@@ -452,8 +337,8 @@ function renderCampaignList() {
       .map((campaign) => `
         <button class="campaign-list-item ${campaign.id === state.activeCampaignId ? "active" : ""}" data-campaign-id="${escapeHtml(campaign.id)}">
           <strong>${escapeHtml(campaign.name)}</strong>
-          <span>${escapeHtml(whatsappTypeLabel(campaign.whatsappCampaignType || campaign.type))} · ${formatDate(campaign.eventDate)}</span>
-          <small>${escapeHtml((campaign.messageChannels || []).join(" + ") || "calls only")} · ${escapeHtml((campaign.targetContactIds || []).length ? `${campaign.targetContactIds.length} selected` : "tags or all customers")} · ${escapeHtml(campaign.location || "No location")}</small>
+          <span>${escapeHtml(campaign.type)} · ${escapeHtml(campaign.callMode || "conversational")} · ${escapeHtml(campaign.languageMode || "english")} · ${formatDate(campaign.eventDate)}</span>
+          <small>${escapeHtml((campaign.dispatchMode || "batch") === "one_by_one" ? "One by one" : "Batch")} · ${escapeHtml((campaign.messageChannels || []).join("/") || "voice only")} · ${escapeHtml((campaign.targetContactIds || []).length ? `${campaign.targetContactIds.length} selected` : "tags/all customers")} · ${escapeHtml(campaign.location || "No location")}</small>
         </button>
       `)
       .join("") || '<div class="inline-result">No campaigns yet.</div>';
@@ -601,7 +486,7 @@ function renderCallsTable() {
             <th>Contact</th>
             <th>Campaign</th>
             <th>Status</th>
-            <th>Connection</th>
+            <th>Provider</th>
             <th>Summary</th>
             <th>Created</th>
             <th>Action</th>
@@ -620,8 +505,8 @@ function renderCallsTable() {
                     <strong>${escapeHtml(campaign?.name || "Unknown")}</strong><br>
                     <small>${escapeHtml(campaign?.callMode || "conversational")} · ${escapeHtml(campaign?.dispatchMode || "batch")}</small>
                   </td>
-                  <td><span class="status ${statusClass(log.status)}">${escapeHtml(statusLabel(log.status))}</span></td>
-                  <td>${escapeHtml(log.providerNote || (log.providerCallId ? "Connected through phone provider" : "CallerDesk"))}</td>
+                  <td><span class="status ${statusClass(log.status)}">${escapeHtml(log.status)}</span></td>
+                  <td>${escapeHtml(log.provider || "none")}<br><small>${escapeHtml(log.providerCallId || log.providerNote || "")}</small></td>
                   <td>${escapeHtml(log.summary || transcript || log.error || "Awaiting call activity.")}</td>
                   <td>${formatDate(log.createdAt)}</td>
                   <td>
@@ -685,9 +570,9 @@ function renderMessagesTable() {
                   <td>${escapeHtml(contact?.name || "Unknown")}<br><small>${escapeHtml(contact?.phone || "")}</small></td>
                   <td>${escapeHtml(campaign?.name || "Unknown")}</td>
                   <td>${escapeHtml(log.channel || "")}</td>
-                  <td>${escapeHtml(directionLabel(log.direction))}</td>
-                  <td><span class="status ${statusClass(log.status)}">${escapeHtml(statusLabel(log.status))}</span><br><small>${escapeHtml(log.error || "")}</small></td>
-                  <td>${escapeHtml(messageKindLabel(log.messageKind))}<br><small>${escapeHtml(windowText)}</small></td>
+                  <td>${escapeHtml(log.direction || "")}</td>
+                  <td><span class="status ${statusClass(log.status)}">${escapeHtml(log.status || "")}</span><br><small>${escapeHtml(log.providerMessageId || log.error || "")}</small></td>
+                  <td>${escapeHtml(log.messageKind || "message")}<br><small>${escapeHtml(windowText)}</small></td>
                   <td>${escapeHtml(messageText)}${log.error ? `<br><small>${escapeHtml(log.error)}</small>` : ""}</td>
                   <td>${formatDate(log.createdAt)}</td>
                   <td>
@@ -785,41 +670,6 @@ function resetWhatsappTemplateForm() {
   elements.whatsappTemplateForm.elements.workspaceId.innerHTML = workspaceOptions(elements.whatsappTemplateForm.elements.workspaceId.value || state.data.workspace?.id || "");
 }
 
-function adminSetupItems() {
-  const workspaces = state.data.admin?.workspaces || [];
-  const templates = state.data.admin?.whatsappTemplates || [];
-  const numbers = state.data.admin?.twilioNumbers || [];
-  const assignedWorkspaces = workspaces.filter((workspace) => workspace.assignedTwilioNumber).length;
-  const aiWorkspaces = workspaces.filter((workspace) => workspace.hasOpenAiKey).length;
-  return [
-    {
-      label: "Create business workspaces",
-      ready: workspaces.length > 0,
-      detail: `${workspaces.length} workspace${workspaces.length === 1 ? "" : "s"}`
-    },
-    {
-      label: "Assign phone numbers",
-      ready: workspaces.length > 0 && assignedWorkspaces === workspaces.length,
-      detail: `${assignedWorkspaces}/${workspaces.length || 0} workspaces have a number`
-    },
-    {
-      label: "Save AI keys",
-      ready: workspaces.length > 0 && aiWorkspaces === workspaces.length,
-      detail: `${aiWorkspaces}/${workspaces.length || 0} workspaces ready for AI`
-    },
-    {
-      label: "Add WhatsApp openers",
-      ready: templates.some((template) => template.active !== false),
-      detail: `${templates.length} approved opener${templates.length === 1 ? "" : "s"} saved`
-    },
-    {
-      label: "Keep numbers available",
-      ready: numbers.some((number) => number.active !== false),
-      detail: `${numbers.length} phone number${numbers.length === 1 ? "" : "s"} in the pool`
-    }
-  ];
-}
-
 function renderAdmin() {
   if (!state.data.admin) return;
 
@@ -828,29 +678,6 @@ function renderAdmin() {
   elements.twilioNumberForm.elements.workspaceId.innerHTML = workspaceOptions(elements.twilioNumberForm.elements.workspaceId.value, true);
   elements.messagingSenderForm.elements.workspaceId.innerHTML = workspaceOptions(elements.messagingSenderForm.elements.workspaceId.value || state.data.workspace?.id || "");
   elements.whatsappTemplateForm.elements.workspaceId.innerHTML = workspaceOptions(elements.whatsappTemplateForm.elements.workspaceId.value || state.data.workspace?.id || "");
-
-  const setupItems = adminSetupItems();
-  elements.adminSetupSummary.innerHTML = `
-    <div class="panel-heading">
-      <div>
-        <p class="eyebrow">Admin setup</p>
-        <h3>Workspace launch checklist</h3>
-      </div>
-    </div>
-    <div class="setup-grid">
-      ${setupItems
-        .map(
-          (item) => `
-            <article class="setup-card">
-              <span class="readiness-dot ${item.ready ? "ready" : ""}"></span>
-              <strong>${escapeHtml(item.label)}</strong>
-              <small>${escapeHtml(item.detail)}</small>
-            </article>
-          `
-        )
-        .join("")}
-    </div>
-  `;
 
   elements.workspacesTable.innerHTML = `
     <div class="table-wrap">
@@ -912,7 +739,7 @@ function renderAdmin() {
                 </tr>
               `;
             })
-            .join("") || '<tr><td colspan="4">No phone numbers yet.</td></tr>'}
+            .join("") || '<tr><td colspan="4">No Twilio numbers yet.</td></tr>'}
         </tbody>
       </table>
     </div>
@@ -977,8 +804,6 @@ function renderAdmin() {
 function render() {
   if (!state.data) return;
   renderTelephony();
-  renderReadiness();
-  renderNextAction();
   renderMetrics();
   renderWorkspaceTabs();
   renderCampaignControls();
@@ -1004,19 +829,6 @@ elements.workspaceTabs.addEventListener("click", (event) => {
   if (!button) return;
   state.activeView = button.dataset.view;
   renderWorkspaceTabs();
-});
-
-document.addEventListener("click", (event) => {
-  const button = event.target.closest(".goto-view");
-  if (!button) return;
-  const target = button.dataset.viewTarget;
-  if (!target) return;
-  if (target === "admin" && state.data.currentUser?.role !== "admin") {
-    state.activeView = "settings";
-  } else {
-    state.activeView = target;
-  }
-  render();
 });
 
 elements.campaignList.addEventListener("click", (event) => {
@@ -1125,14 +937,16 @@ elements.previewMessages.addEventListener("click", async () => {
         const detail =
           channel === "whatsapp"
             ? [
-                `<span class="preview-line"><strong>${escapeHtml(messageKindLabel(item.messageKind))}</strong></span>`,
-                item.templateName ? `First message: ${escapeHtml(item.templateName)}` : "",
-                item.body ? `Customer will receive: ${escapeHtml(item.body)}` : "After the customer replies, CallerDesk sends your editable WhatsApp message and can answer questions.",
+                `Kind: ${escapeHtml(item.messageKind || "whatsapp")}`,
+                item.templateName ? `Opener: ${escapeHtml(item.templateName)}` : "",
+                item.contentSid ? `ContentSid: ${escapeHtml(item.contentSid)}` : "",
+                item.contentVariables ? `Variables: ${escapeHtml(JSON.stringify(item.contentVariables || {}))}` : "",
+                item.body ? `Freeform: ${escapeHtml(item.body)}` : "",
                 item.error ? `<strong>${escapeHtml(item.error)}</strong>` : ""
               ]
                 .filter(Boolean)
                 .join("<br>")
-            : `Customer will receive: ${escapeHtml(item.body || "")}`;
+            : escapeHtml(item.body || "");
         return `<strong>${escapeHtml(channel.toUpperCase())}</strong> to ${escapeHtml(payload.sampleContact?.name || "sample")}<br>${detail}`;
       })
       .join("<hr>");
@@ -1279,8 +1093,8 @@ elements.importCsv.addEventListener("click", async () => {
     const errorText = payload.errors.length
       ? ` ${payload.errors.length} row issue(s): ${payload.errors.map((error) => `row ${error.row} ${error.message}`).join(" ")}`
       : "";
-    elements.csvResult.textContent = `Imported ${payload.contacts.length} customer(s).${errorText}`;
-    showToast("Customers imported.");
+    elements.csvResult.textContent = `Imported ${payload.contacts.length} contact(s).${errorText}`;
+    showToast("Contacts imported.");
     render();
   } catch (error) {
     showToast(error.message);
@@ -1482,7 +1296,7 @@ elements.twilioNumberForm.addEventListener("submit", async (event) => {
       : await api("/api/admin/twilio-numbers", { method: "POST", body });
     state.data = payload.state;
     elements.twilioNumberForm.reset();
-    showToast(id ? "Phone number saved." : "Phone number added.");
+    showToast(id ? "Twilio number saved." : "Twilio number added.");
     render();
   } catch (error) {
     showToast(error.message);
