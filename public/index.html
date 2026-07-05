@@ -3,59 +3,44 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>CallerDesk MVP</title>
-    <link rel="stylesheet" href="/styles.css?v=14" />
+    <title>CallerDesk</title>
+    <link rel="stylesheet" href="/styles.css?v=15" />
   </head>
   <body>
     <header class="topbar">
       <div>
-        <p class="eyebrow">Voice marketing for neighborhood businesses</p>
+        <p class="eyebrow">Small business marketing assistant</p>
         <h1>CallerDesk</h1>
       </div>
       <div class="topbar-actions">
         <div class="telephony-status identity-status" id="workspaceIdentity">Loading workspace...</div>
-        <div class="telephony-status" id="telephonyStatus">Loading telephony status...</div>
+        <div class="telephony-status" id="telephonyStatus">Checking launch readiness...</div>
         <button id="logoutButton" type="button" class="secondary-action">Sign out</button>
       </div>
     </header>
 
     <main class="app-shell">
-      <section class="hero-band">
-        <div class="hero-copy">
-          <h2>Invite customers personally, then answer their questions from approved details.</h2>
-          <p>
-            Create a popup or sale campaign, upload opted-in contacts, preview the call, and schedule
-            outbound voice calls with follow-up capture.
-          </p>
+      <section class="workspace-overview">
+        <div class="overview-copy">
+          <p class="eyebrow">Today</p>
+          <h2>Start with the campaign, then let CallerDesk handle the follow-up.</h2>
+          <p>Create an invite, choose opted-in customers, preview what they will hear or receive, and launch when everything is ready.</p>
         </div>
-        <div class="voice-visual" aria-label="Live call workflow">
-          <div class="phone-frame">
-            <div class="call-dot"></div>
-            <div>
-              <strong>Outbound call</strong>
-              <span>Scripted invite + approved Q&amp;A</span>
-            </div>
-          </div>
-          <div class="waveform" aria-hidden="true">
-            <span></span><span></span><span></span><span></span><span></span><span></span>
-          </div>
-          <div class="handoff-row">
-            <span>Unknown questions become follow-ups</span>
-          </div>
-        </div>
+        <div id="readinessPanel" class="readiness-panel" aria-live="polite"></div>
       </section>
+      <section id="nextActionPanel" class="next-action-panel" aria-live="polite"></section>
 
       <section class="metrics-grid" id="metricsGrid"></section>
 
       <nav class="workspace-tabs" aria-label="Workspace">
         <button class="tab active" data-view="campaigns">Campaigns</button>
         <button class="tab" data-view="customers">Customers</button>
-        <button class="tab" data-view="knowledge">Knowledge</button>
-        <button class="tab" data-view="calls">Calls</button>
-        <button class="tab" data-view="messages">Messages</button>
-        <button class="tab" data-view="followups">Follow-ups</button>
+        <button class="tab" data-view="knowledge">Approved answers</button>
+        <button class="tab" data-view="followups">Needs owner</button>
+        <button class="tab" data-view="messages">Message history</button>
+        <button class="tab" data-view="calls">Call history</button>
         <button class="tab" data-view="settings">Settings</button>
-        <button class="tab admin-only" data-view="admin">Admin</button>
+        <button class="tab admin-only" data-view="admin">Admin setup</button>
       </nav>
 
       <section class="workspace-view active" data-view-panel="campaigns">
@@ -77,10 +62,14 @@
                 <p class="eyebrow">Editor</p>
                 <h3 id="campaignEditorTitle">Create campaign</h3>
               </div>
-              <button id="scheduleCalls" type="button" class="primary-action">Schedule calls</button>
+              <button id="scheduleCalls" type="button" class="primary-action">Launch calls</button>
             </div>
             <form id="campaignForm" class="form-grid">
               <input type="hidden" name="id" />
+              <div class="form-section span-2">
+                <strong>1. What are you announcing?</strong>
+                <span>Use the words a customer would understand. CallerDesk will turn this into calls and messages.</span>
+              </div>
               <label>
                 Campaign name
                 <input name="name" required placeholder="Saturday chai tasting" />
@@ -93,40 +82,8 @@
                 </select>
               </label>
               <label>
-                Call mode
-                <select name="callMode">
-                  <option value="conversational">Conversational AI</option>
-                  <option value="message">One-way message delivery</option>
-                  <option value="message_then_conversation">Message, then Q&amp;A</option>
-                </select>
-              </label>
-              <label>
-                Send calls
-                <select name="dispatchMode">
-                  <option value="batch">Batch through Twilio</option>
-                  <option value="one_by_one">One by one</option>
-                </select>
-              </label>
-              <label>
-                Language
-                <select name="languageMode">
-                  <option value="english">English</option>
-                  <option value="hindi">Hindi</option>
-                  <option value="hinglish">Hinglish / mixed</option>
-                  <option value="custom">Custom language plan</option>
-                </select>
-              </label>
-              <label>
                 Date and time
                 <input name="eventDate" required type="datetime-local" />
-              </label>
-              <label>
-                Target tags
-                <input name="targetTags" placeholder="regular, popup" />
-              </label>
-              <label class="span-2">
-                Language notes
-                <textarea name="languageInstructions" rows="2" placeholder="Example: [Hindi] for the greeting, [English] for menu names and the address. Do not translate brand names."></textarea>
               </label>
               <label class="span-2">
                 Location
@@ -140,18 +97,59 @@
                 Objective
                 <textarea name="objective" rows="2" placeholder="Invite regulars and answer quick event questions."></textarea>
               </label>
+              <details class="advanced-options span-2">
+                <summary>Call voice, language, and pacing</summary>
+                <div class="form-grid nested-grid">
+                  <label>
+                    How should calls behave?
+                    <select name="callMode">
+                      <option value="conversational">Invite and answer questions</option>
+                      <option value="message">Deliver the message only</option>
+                      <option value="message_then_conversation">Deliver message, then answer questions</option>
+                    </select>
+                  </label>
+                  <label>
+                    Call sending pace
+                    <select name="dispatchMode">
+                      <option value="batch">Call everyone together</option>
+                      <option value="one_by_one">Call one person at a time</option>
+                    </select>
+                  </label>
+                  <label>
+                    Language
+                    <select name="languageMode">
+                      <option value="english">English</option>
+                      <option value="hindi">Hindi</option>
+                      <option value="hinglish">Hinglish / mixed</option>
+                      <option value="custom">Custom language plan</option>
+                    </select>
+                  </label>
+                  <label>
+                    Target tags
+                    <input name="targetTags" placeholder="regular, popup" />
+                  </label>
+                  <label class="span-2">
+                    Language notes
+                    <textarea name="languageInstructions" rows="2" placeholder="Example: greet in Hindi, keep menu names and address in English."></textarea>
+                  </label>
+                  <label class="span-2">
+                    Delivery notes
+                    <textarea name="scriptNotes" rows="2" placeholder="Warm tone, mention limited seating, no unapproved discounts."></textarea>
+                  </label>
+                </div>
+              </details>
               <label class="span-2">
-                Script notes
-                <textarea name="scriptNotes" rows="2" placeholder="Warm tone, mention limited seating, no unapproved discounts."></textarea>
+                Call script preview
+                <textarea name="scriptOverride" id="scriptPreview" class="script-preview" rows="8" spellcheck="true" placeholder="Click Preview call to generate a draft, then edit if needed."></textarea>
               </label>
-              <label class="span-2">
-                Editable call script
-                <textarea name="scriptOverride" id="scriptPreview" class="script-preview" rows="10" spellcheck="true" placeholder="Click Preview script to generate a draft, then edit and save it."></textarea>
-              </label>
+              <div class="form-section span-2">
+                <strong>2. Choose how to reach customers</strong>
+                <span>Calls, texts, and WhatsApp can work together. WhatsApp starts with an approved opener, then your editable message is sent after the customer replies.</span>
+              </div>
               <div class="span-2 messaging-editor">
                 <div class="section-label">
-                  <strong>Messaging</strong>
-                  <span>Messages reuse the assigned Twilio caller number by default. WhatsApp uses an approved opener, then sends your editable message after the customer replies.</span>
+                  <strong>Channels</strong>
+                  <span>Pick the channels for this campaign. Demo mode is safe and will not contact real customers.</span>
                 </div>
                 <div class="channel-toggle-row">
                   <label class="checkbox-row">
@@ -169,11 +167,11 @@
                 </div>
               </div>
               <label class="span-2">
-                SMS / fallback body
+                Text message
                 <textarea name="smsBody" rows="4" placeholder="Hi {{customer_name}}, {{business_name}} wanted to invite you to {{campaign_name}} at {{location}}."></textarea>
               </label>
               <label>
-                WhatsApp campaign type
+                WhatsApp message type
                 <select name="whatsappCampaignType">
                   <option value="event">Event invite</option>
                   <option value="sale">Sale announcement</option>
@@ -184,42 +182,51 @@
                 </select>
               </label>
               <label>
-                WhatsApp opener
+                First WhatsApp message
                 <select name="whatsappTemplateId"></select>
               </label>
-              <label>
-                If WhatsApp cannot send
-                <select name="whatsappFallbackChannels">
-                  <option value="">Show fallback warning</option>
-                  <option value="sms">Suggest SMS</option>
-                  <option value="call">Suggest call</option>
-                  <option value="sms,call">Suggest SMS or call</option>
-                </select>
-              </label>
-              <label>
-                WhatsApp strategy
-                <select name="whatsappStrategy">
-                  <option value="reply_to_unlock">Reply-to-unlock</option>
-                  <option value="direct_template">Direct approved template</option>
-                </select>
-              </label>
               <label class="span-2">
-                After-reply WhatsApp message
+                Message after the customer replies
                 <textarea name="whatsappPostReplyBody" rows="5" placeholder="Hi {{customer_name}}, thanks for replying. Here are the details for {{campaign_name}}: {{offer}} at {{location}}."></textarea>
               </label>
+              <details class="advanced-options span-2">
+                <summary>WhatsApp fallback options</summary>
+                <div class="form-grid nested-grid">
+                  <label>
+                    If WhatsApp cannot send
+                    <select name="whatsappFallbackChannels">
+                      <option value="">Show a warning</option>
+                      <option value="sms">Suggest text message</option>
+                      <option value="call">Suggest call</option>
+                      <option value="sms,call">Suggest text or call</option>
+                    </select>
+                  </label>
+                  <label>
+                    WhatsApp flow
+                    <select name="whatsappStrategy">
+                      <option value="reply_to_unlock">Ask for a reply first</option>
+                      <option value="direct_template">Use approved template only</option>
+                    </select>
+                  </label>
+                </div>
+              </details>
+              <div class="form-section span-2">
+                <strong>3. Choose the audience</strong>
+                <span>Only customers with consent and without opt-outs can be contacted.</span>
+              </div>
               <div class="span-2 campaign-customer-section">
                 <div class="section-label">
-                  <strong>Campaign customers</strong>
+                  <strong>Customers for this campaign</strong>
                   <span>Select specific customers for this campaign. If none are selected, tags are used; if no tags are set, all callable customers are included.</span>
                 </div>
                 <div id="campaignCustomerPicker" class="customer-picker"></div>
               </div>
               <div class="action-row span-2">
                 <button type="submit" class="primary-action" id="saveCampaign">Save campaign</button>
-                <button id="previewScript" type="button" class="secondary-action">Preview script</button>
-                <button id="saveScript" type="button" class="secondary-action">Save script only</button>
+                <button id="previewScript" type="button" class="secondary-action">Preview call</button>
+                <button id="saveScript" type="button" class="secondary-action">Save call script</button>
                 <button id="previewMessages" type="button" class="secondary-action">Preview messages</button>
-                <button id="scheduleMessages" type="button" class="secondary-action">Schedule messages</button>
+                <button id="scheduleMessages" type="button" class="secondary-action">Launch messages</button>
               </div>
             </form>
             <div id="messagePreviewResult" class="inline-result"></div>
@@ -248,7 +255,7 @@
             <button id="loadSampleCsv" type="button" class="secondary-action">Use sample CSV</button>
           </div>
           <textarea id="csvText" class="csv-box" rows="8" spellcheck="false" placeholder="name,phone,consent_source,tags"></textarea>
-          <button id="importCsv" type="button" class="primary-action">Import contacts</button>
+          <button id="importCsv" type="button" class="primary-action">Import customers</button>
           <div id="csvResult" class="inline-result"></div>
           <div id="customersTable" class="tab-content"></div>
         </div>
@@ -258,7 +265,7 @@
         <div class="panel">
           <div class="panel-heading">
             <div>
-              <p class="eyebrow">Knowledge base</p>
+              <p class="eyebrow">Approved answers</p>
               <h3>Approved answers</h3>
             </div>
           </div>
@@ -289,8 +296,8 @@
         <div class="panel">
           <div class="panel-heading">
             <div>
-              <p class="eyebrow">Calls</p>
-              <h3>Call logs</h3>
+              <p class="eyebrow">History</p>
+              <h3>Call history</h3>
             </div>
           </div>
           <div id="callsTable" class="tab-content"></div>
@@ -301,8 +308,8 @@
         <div class="panel">
           <div class="panel-heading">
             <div>
-              <p class="eyebrow">Messages</p>
-              <h3>SMS and WhatsApp logs</h3>
+              <p class="eyebrow">History</p>
+              <h3>Message history</h3>
             </div>
           </div>
           <div id="messagesTable" class="tab-content"></div>
@@ -313,8 +320,8 @@
         <div class="panel">
           <div class="panel-heading">
             <div>
-              <p class="eyebrow">Follow-ups</p>
-              <h3>Questions needing the business</h3>
+              <p class="eyebrow">Needs owner</p>
+              <h3>Questions and requests waiting for you</h3>
             </div>
           </div>
           <div id="followupsTable" class="tab-content"></div>
@@ -335,8 +342,8 @@
               <input name="workspaceName" placeholder="Default workspace" />
             </label>
             <label>
-              Assigned caller / messaging number
-              <input id="assignedCallerNumber" readonly placeholder="Admin has not assigned a Twilio number" />
+              Phone number for customer outreach
+              <input id="assignedCallerNumber" readonly placeholder="Admin has not assigned a number yet" />
             </label>
             <label>
               Business name
@@ -364,10 +371,10 @@
             </label>
             <button type="submit" class="primary-action">Save business profile</button>
           </form>
-          <div class="settings-divider"></div>
-          <form id="openAiKeyForm" class="form-grid">
+          <div class="settings-divider admin-only"></div>
+          <form id="openAiKeyForm" class="form-grid admin-only">
             <label>
-              OpenAI API key
+              AI reply key
               <input name="apiKey" type="password" autocomplete="off" placeholder="sk-..." />
             </label>
             <label>
@@ -384,11 +391,12 @@
 
       <section class="workspace-view" data-view-panel="admin">
         <div class="admin-layout">
+          <div id="adminSetupSummary" class="panel admin-setup-summary"></div>
           <div class="panel">
             <div class="panel-heading">
               <div>
-                <p class="eyebrow">Admin</p>
-                <h3>Workspaces</h3>
+                <p class="eyebrow">Admin setup</p>
+                <h3>Business workspaces</h3>
               </div>
               <button id="newWorkspace" type="button" class="secondary-action">New</button>
             </div>
@@ -403,15 +411,15 @@
                 <input name="businessName" placeholder="Mina's Corner Cafe" />
               </label>
               <label>
-                Assign Twilio number
+                Phone number for calls and messages
                 <select name="assignedTwilioNumberId"></select>
               </label>
               <label>
-                OpenAI API key
+                AI voice and reply key
                 <input name="openAiApiKey" type="password" autocomplete="off" placeholder="Leave blank to keep saved key" />
               </label>
               <label>
-                Saved OpenAI key
+                Saved AI key
                 <input id="adminOpenAiKeyMasked" readonly placeholder="No key saved" />
               </label>
               <label class="checkbox-row span-2">
@@ -459,8 +467,8 @@
           <div class="panel">
             <div class="panel-heading">
               <div>
-                <p class="eyebrow">Admin</p>
-                <h3>Twilio numbers</h3>
+                <p class="eyebrow">Admin setup</p>
+                <h3>Phone numbers</h3>
               </div>
             </div>
             <form id="twilioNumberForm" class="form-grid compact-form">
@@ -485,8 +493,8 @@
           <div class="panel">
             <div class="panel-heading">
               <div>
-                <p class="eyebrow">Admin</p>
-                <h3>Messaging sender overrides</h3>
+                <p class="eyebrow">Advanced</p>
+                <h3>Sender routing</h3>
               </div>
             </div>
             <form id="messagingSenderForm" class="form-grid compact-form">
@@ -533,8 +541,8 @@
           <div class="panel">
             <div class="panel-heading">
               <div>
-                <p class="eyebrow">Admin</p>
-                <h3>WhatsApp template library</h3>
+                <p class="eyebrow">Admin setup</p>
+                <h3>WhatsApp opener library</h3>
               </div>
             </div>
             <form id="whatsappTemplateForm" class="form-grid compact-form">
@@ -575,8 +583,8 @@
                 <input name="supportedCountries" placeholder="ALL, IN, NON_US, US" />
               </label>
               <label class="span-2">
-                Twilio ContentSid
-                <input name="contentSid" required placeholder="HXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" />
+                Approved template ID
+                <input name="contentSid" required placeholder="HX... from the approved WhatsApp template" />
               </label>
               <label class="span-2">
                 Variables JSON
@@ -611,6 +619,6 @@
     </main>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="/app.js?v=14"></script>
+    <script type="module" src="/app.js?v=15"></script>
   </body>
 </html>
